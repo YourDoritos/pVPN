@@ -1,0 +1,17 @@
+[Unit]
+Description=pVPN Daemon - Proton VPN Connection Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pvpnd
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=pvpn
+
+# Network control permissions
+ReadWritePaths=/run/pvpn /etc/resolv.conf
+
+[Install]
+WantedBy=multi-user.target

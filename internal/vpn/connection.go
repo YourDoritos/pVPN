@@ -1,0 +1,674 @@
+package vpn
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"sync"
+	"time"
+
+	"github.com/grennboy527/pvpn/internal/api"
+	"github.com/grennboy527/pvpn/internal/network"
+	"github.com/grennboy527/pvpn/internal/stealth"
+	"github.com/vishvananda/netlink"
+)
+
+// State represents the VPN connection state.
+type State int
+
+const (
+	StateDisconnected State = iota
+	StateConnecting
+	StateConnected
+	StateDisconnecting
+	StateReconnecting
+	StateError
+)
+
+func (s State) String() string {
+	switch s {
+	case StateDisconnected:
+		return "Disconnected"
+	case StateConnecting:
+		return "Connecting"
+	case StateConnected:
+		return "Connected"
+	case StateDisconnecting:
+		return "Disconnecting"
+	case StateReconnecting:
+		return "Reconnecting"
+	case StateError:
+		return "Error"
+	default:
+		return "Unknown"
+	}
+}
+
+// ConnectionInfo holds details about the active connection.
+type ConnectionInfo struct {
+	ServerName    string
+	ServerIP      string
+	ServerCountry string
+	EntryCountry  string // Non-empty for Secure Core connections
+	ConnectedAt   time.Time
+	State         State
+	ForwardedPort uint16
+	LastError     error
+}
+
+// Connection manages the full VPN connection lifecycle.
+type Connection struct {
+	mu sync.RWMutex
+
+	client     *api.Client
+	dnsBackend network.DNSBackend
+
+	wg        *WireGuardManager
+	stealthMgr *stealth.StealthManager
+	routes    *RouteManager
+	ks        *KillSwitch
+	la        *LocalAgent
+	portFwd   *PortForwarder
+	info      ConnectionInfo
+	protocol  string // "wireguard" or "stealth"
+	onState   func(State)
+	onLog     func(string)
+
+	// Reconnection state
+	reconnect       bool
+	reconnectCancel context.CancelFunc
+	lastServer      *api.LogicalServer
+	lastCertFeats   api.CertificateFeatures
+	lastKillSwitch  bool
+	lastProtocol    string
+	lastCustomDNS   []string
+}
+
+// tunnelLink returns the netlink.Link for whichever tunnel is active.
+func (c *Connection) tunnelLink() netlink.Link {
+	if c.stealthMgr != nil {
+		return c.stealthMgr.Link()
+	}
+	if c.wg != nil {
+		return c.wg.Link()
+	}
+	return nil
+}
+
+// tunnelIfIndex returns the interface index for whichever tunnel is active.
+func (c *Connection) tunnelIfIndex() int {
+	if c.stealthMgr != nil {
+		return c.stealthMgr.IfIndex()
+	}
+	if c.wg != nil {
+		return c.wg.IfIndex()
+	}
+	return 0
+}
+
+// NewConnection creates a new VPN connection manager.
+func NewConnection(client *api.Client, dnsBackend network.DNSBackend) *Connection {
+	return &Connection{
+		client:     client,
+		dnsBackend: dnsBackend,
+		info:       ConnectionInfo{State: StateDisconnected},
+	}
+}
+
+// OnStateChange registers a callback for state changes.
+func (c *Connection) OnStateChange(fn func(State)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onState = fn
+}
+
+// OnLog registers a callback for log messages (from Local Agent etc.).
+func (c *Connection) OnLog(fn func(string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onLog = fn
+}
+
+// Info returns the current connection info.
+func (c *Connection) Info() ConnectionInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.info
+}
+
+// State returns the current connection state.
+func (c *Connection) State() State {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.info.State
+}
+
+// Protocol returns the active protocol ("wireguard" or "stealth").
+func (c *Connection) Protocol() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.protocol
+}
+
+// Connect establishes a VPN connection to the given server.
+// On ANY failure, all partially-created resources are torn down so the
+// host network is never left in a broken state.
+//
+// Protocol can be "wireguard", "stealth", or "smart".
+// Smart mode tries WireGuard first, then falls back to stealth on failure.
+func (c *Connection) Connect(ctx context.Context, server *api.LogicalServer, kp *api.KeyPair, cert *api.CertificateResponse, certFeatures api.CertificateFeatures, enableKillSwitch bool, protocol string, customDNS []string) error {
+	c.setState(StateConnecting)
+
+	// Store connection params for reconnection
+	c.mu.Lock()
+	c.lastServer = server
+	c.lastCertFeats = certFeatures
+	c.lastKillSwitch = enableKillSwitch
+	c.lastProtocol = protocol
+	c.lastCustomDNS = customDNS
+	c.mu.Unlock()
+
+	var err error
+	if protocol == "" || protocol == "smart" {
+		err = c.connectSmart(ctx, server, kp, cert, certFeatures, enableKillSwitch, customDNS)
+	} else {
+		err = c.connectWithProtocol(ctx, server, kp, cert, certFeatures, enableKillSwitch, protocol, customDNS)
+	}
+
+	if err == nil {
+		// Start monitoring for reconnection
+		c.monitorConnection()
+	}
+	return err
+}
+
+// connectSmart tries WireGuard first (5s timeout), falls back to stealth.
+func (c *Connection) connectSmart(ctx context.Context, server *api.LogicalServer, kp *api.KeyPair, cert *api.CertificateResponse, certFeatures api.CertificateFeatures, enableKillSwitch bool, customDNS []string) error {
+	if c.onLog != nil {
+		c.onLog("Smart: trying WireGuard...")
+	}
+
+	// Try WireGuard with a short 5s probe timeout
+	err := c.connectWithProtocol(ctx, server, kp, cert, certFeatures, enableKillSwitch, "wireguard", customDNS, 5*time.Second)
+	if err == nil {
+		if c.onLog != nil {
+			c.onLog("Smart: WireGuard connected")
+		}
+		return nil
+	}
+
+	if c.onLog != nil {
+		c.onLog("Smart: WireGuard blocked, switching to Stealth...")
+	}
+
+	// WireGuard failed — need fresh keys for the new connection
+	kp2, err2 := api.GenerateKeyPair()
+	if err2 != nil {
+		return fmt.Errorf("smart fallback keygen: %w (original: %w)", err2, err)
+	}
+	cert2, err2 := c.client.RequestCert(ctx, kp2, certFeatures)
+	if err2 != nil {
+		return fmt.Errorf("smart fallback cert: %w (original: %w)", err2, err)
+	}
+
+	c.setState(StateConnecting)
+	return c.connectWithProtocol(ctx, server, kp2, cert2, certFeatures, enableKillSwitch, "stealth", customDNS, 15*time.Second)
+}
+
+func (c *Connection) connectWithProtocol(ctx context.Context, server *api.LogicalServer, kp *api.KeyPair, cert *api.CertificateResponse, certFeatures api.CertificateFeatures, enableKillSwitch bool, protocol string, customDNS []string, laTimeout ...time.Duration) error {
+	c.mu.Lock()
+	c.protocol = protocol
+	c.mu.Unlock()
+
+	err := c.doConnect(ctx, server, kp, cert, certFeatures, enableKillSwitch, protocol, customDNS, laTimeout...)
+	if err != nil {
+		c.teardown()
+		c.setState(StateDisconnected)
+		return err
+	}
+	return nil
+}
+
+// doConnect does the actual connection work. Caller handles cleanup on error.
+func (c *Connection) doConnect(ctx context.Context, server *api.LogicalServer, kp *api.KeyPair, cert *api.CertificateResponse, certFeatures api.CertificateFeatures, enableKillSwitch bool, protocol string, customDNS []string, laTimeouts ...time.Duration) error {
+	// Find best physical server
+	ps := server.BestServer()
+	if ps == nil {
+		return fmt.Errorf("no online physical server for %s", server.Name)
+	}
+
+	serverIP := net.ParseIP(ps.EntryIP)
+	if serverIP == nil {
+		return fmt.Errorf("invalid server IP: %s", ps.EntryIP)
+	}
+
+	// Step 1: Create tunnel (kernel WireGuard or stealth WireGuard-over-TLS)
+	var tunnelLink netlink.Link
+	var tunnelIfIndex int
+
+	if protocol == "stealth" {
+		// Fetch client config for the correct stealth TCP port
+		stealthPort := stealth.DefaultStealthPort
+		clientCfg, err := c.client.GetClientConfig(ctx)
+		if err == nil && len(clientCfg.DefaultPorts.WireGuard.TCP) > 0 {
+			stealthPort = clientCfg.DefaultPorts.WireGuard.TCP[0]
+		}
+
+		sm := stealth.NewStealthManager()
+		sm.OnLog = c.onLog
+		sCfg := &stealth.StealthConfig{
+			PrivateKey: kp.WireGuardPrivateKey,
+			PublicKey:  ps.X25519PublicKey,
+			ServerIP:   ps.EntryIP,
+			Port:       stealthPort,
+			Address:    DefaultVPNAddress,
+		}
+		if err := sm.Up(sCfg); err != nil {
+			return fmt.Errorf("bring up stealth tunnel: %w", err)
+		}
+		c.mu.Lock()
+		c.stealthMgr = sm
+		c.mu.Unlock()
+		tunnelLink = sm.Link()
+		tunnelIfIndex = sm.IfIndex()
+	} else {
+		wg, err := NewWireGuardManager()
+		if err != nil {
+			return fmt.Errorf("create wireguard manager: %w", err)
+		}
+		wgCfg := &WireGuardConfig{
+			PrivateKey: kp.WireGuardPrivateKey,
+			PublicKey:  ps.X25519PublicKey,
+			Endpoint:   fmt.Sprintf("%s:51820", ps.EntryIP),
+			Address:    DefaultVPNAddress,
+		}
+		if err := wg.Up(wgCfg); err != nil {
+			wg.Close()
+			return fmt.Errorf("bring up wireguard: %w", err)
+		}
+		c.mu.Lock()
+		c.wg = wg
+		c.mu.Unlock()
+		tunnelLink = wg.Link()
+		tunnelIfIndex = wg.IfIndex()
+	}
+
+	// Step 2: Set up fwmark-based policy routing
+	routes := NewRouteManager(tunnelLink)
+	if err := routes.Up(); err != nil {
+		return fmt.Errorf("setup routes: %w", err)
+	}
+	c.mu.Lock()
+	c.routes = routes
+	c.mu.Unlock()
+
+	// Step 3: Start Local Agent (mTLS connection to VPN server)
+	features := DefaultFeatures(&certFeatures, server)
+	la, err := NewLocalAgent(kp, cert, ps.Domain, features)
+	if err != nil {
+		return fmt.Errorf("create local agent: %w", err)
+	}
+	la.onLog = c.onLog
+	c.mu.Lock()
+	c.la = la
+	c.mu.Unlock()
+
+	laTimeout := 15 * time.Second
+	if len(laTimeouts) > 0 && laTimeouts[0] > 0 {
+		laTimeout = laTimeouts[0]
+	}
+	if err := la.WaitConnected(laTimeout); err != nil {
+		return fmt.Errorf("local agent: %w", err)
+	}
+
+	// Step 4: Configure DNS
+	var dnsServers []net.IP
+	if len(customDNS) > 0 {
+		for _, addr := range customDNS {
+			if ip := net.ParseIP(addr); ip != nil {
+				dnsServers = append(dnsServers, ip)
+			}
+		}
+	}
+	if len(dnsServers) == 0 {
+		dnsServers = []net.IP{net.ParseIP("10.2.0.1")}
+	}
+	if err := c.dnsBackend.SetDNS(tunnelIfIndex, dnsServers); err != nil {
+		return fmt.Errorf("setup DNS (%s): %w", c.dnsBackend.Name(), err)
+	}
+
+	// Step 5: Enable kill switch if requested
+	if enableKillSwitch {
+		ks, err := NewKillSwitch()
+		if err != nil {
+			return fmt.Errorf("create kill switch: %w", err)
+		}
+		if err := ks.Enable(serverIP); err != nil {
+			return fmt.Errorf("enable kill switch: %w", err)
+		}
+		c.mu.Lock()
+		c.ks = ks
+		c.mu.Unlock()
+	}
+
+	// Step 6: Start port forwarding if enabled (must be after full tunnel config)
+	if certFeatures.PortForwarding {
+		pf := NewPortForwarder(ctx, c.onLog)
+		c.mu.Lock()
+		c.portFwd = pf
+		c.mu.Unlock()
+	}
+
+	// Success
+	var fwdPort uint16
+	if c.portFwd != nil {
+		fwdPort = c.portFwd.Port()
+	}
+	var entryCountry string
+	if server.IsSecureCore() {
+		entryCountry = server.EntryCountry
+	}
+	c.mu.Lock()
+	c.info = ConnectionInfo{
+		ServerName:    server.Name,
+		ServerIP:      ps.EntryIP,
+		ServerCountry: server.ExitCountry,
+		EntryCountry:  entryCountry,
+		ConnectedAt:   time.Now(),
+		State:         StateConnected,
+		ForwardedPort: fwdPort,
+	}
+	c.mu.Unlock()
+
+	if c.onState != nil {
+		c.onState(StateConnected)
+	}
+
+	return nil
+}
+
+// EnableReconnect enables automatic reconnection with exponential backoff.
+// Must be called before Connect. On disconnect due to error (not user-initiated),
+// the connection will automatically retry.
+func (c *Connection) EnableReconnect(enabled bool) {
+	c.mu.Lock()
+	c.reconnect = enabled
+	c.mu.Unlock()
+}
+
+// Disconnect tears down the VPN connection (user-initiated).
+// Stops any reconnection attempts.
+func (c *Connection) Disconnect() error {
+	c.mu.Lock()
+	// Cancel any ongoing reconnection
+	if c.reconnectCancel != nil {
+		c.reconnectCancel()
+		c.reconnectCancel = nil
+	}
+	c.mu.Unlock()
+
+	c.setState(StateDisconnecting)
+
+	if err := c.teardown(); err != nil {
+		c.setError(err)
+		return err
+	}
+
+	c.setState(StateDisconnected)
+	return nil
+}
+
+// monitorConnection watches the WireGuard handshake and triggers
+// reconnection if the tunnel goes stale.
+func (c *Connection) monitorConnection() {
+	c.mu.RLock()
+	reconnect := c.reconnect
+	c.mu.RUnlock()
+
+	if !reconnect {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.mu.Lock()
+	c.reconnectCancel = cancel
+	c.mu.Unlock()
+
+	go func() {
+		missedHandshakes := 0
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if c.State() != StateConnected {
+					return
+				}
+				stats, err := c.Stats()
+				if err != nil {
+					missedHandshakes++
+				} else if time.Since(stats.LastHandshake) > 3*time.Minute {
+					missedHandshakes++
+				} else {
+					missedHandshakes = 0
+				}
+
+				// If we've missed handshakes for 30s, trigger reconnect
+				if missedHandshakes >= 3 {
+					c.setState(StateReconnecting)
+					if c.onLog != nil {
+						c.onLog("Connection stale, reconnecting...")
+					}
+					c.doReconnect(ctx)
+					return
+				}
+			}
+		}
+	}()
+}
+
+// doReconnect attempts to reconnect with exponential backoff.
+func (c *Connection) doReconnect(ctx context.Context) {
+	c.mu.RLock()
+	server := c.lastServer
+	certFeats := c.lastCertFeats
+	ks := c.lastKillSwitch
+	protocol := c.lastProtocol
+	customDNS := c.lastCustomDNS
+	c.mu.RUnlock()
+
+	if server == nil {
+		return
+	}
+
+	// Tear down the broken connection
+	c.teardown()
+
+	backoff := 2 * time.Second
+	maxBackoff := 2 * time.Minute
+	maxAttempts := 10
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			c.setState(StateDisconnected)
+			return
+		default:
+		}
+
+		if c.onLog != nil {
+			c.onLog(fmt.Sprintf("Reconnect attempt %d/%d...", attempt, maxAttempts))
+		}
+		c.setState(StateConnecting)
+
+		kp, err := api.GenerateKeyPair()
+		if err != nil {
+			goto retry
+		}
+
+		{
+			cert, err := c.client.RequestCert(ctx, kp, certFeats)
+			if err != nil {
+				goto retry
+			}
+
+			err = c.connectWithProtocol(ctx, server, kp, cert, certFeats, ks, protocol, customDNS, 15*time.Second)
+			if err == nil {
+				if c.onLog != nil {
+					c.onLog("Reconnected successfully")
+				}
+				c.monitorConnection()
+				return
+			}
+		}
+
+	retry:
+		select {
+		case <-ctx.Done():
+			c.setState(StateDisconnected)
+			return
+		case <-time.After(backoff):
+		}
+
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+
+	if c.onLog != nil {
+		c.onLog("Reconnection failed after max attempts")
+	}
+	c.setState(StateDisconnected)
+}
+
+// Stats returns the current WireGuard peer statistics.
+func (c *Connection) Stats() (*PeerStats, error) {
+	c.mu.RLock()
+	wg := c.wg
+	sm := c.stealthMgr
+	c.mu.RUnlock()
+
+	if sm != nil {
+		rx, tx, hs, err := sm.Stats()
+		if err != nil {
+			return nil, err
+		}
+		return &PeerStats{RxBytes: rx, TxBytes: tx, LastHandshake: hs}, nil
+	}
+	if wg != nil {
+		return wg.Stats()
+	}
+	return nil, fmt.Errorf("not connected")
+}
+
+// teardown reverses all connection steps in reverse order.
+func (c *Connection) teardown() error {
+	c.mu.Lock()
+	pf := c.portFwd
+	c.portFwd = nil
+	la := c.la
+	ks := c.ks
+	routes := c.routes
+	wg := c.wg
+	sm := c.stealthMgr
+	dnsBackend := c.dnsBackend
+	ifIndex := c.tunnelIfIndex()
+	c.mu.Unlock()
+
+	var firstErr error
+
+	// Stop port forwarding first (it uses the tunnel)
+	if pf != nil {
+		pf.Stop()
+	}
+
+	// Reverse order: local agent -> kill switch -> DNS -> routes -> tunnel
+
+	if la != nil {
+		la.Close()
+		c.mu.Lock()
+		c.la = nil
+		c.mu.Unlock()
+	}
+
+	if ks != nil {
+		if err := ks.Disable(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("disable kill switch: %w", err)
+		}
+		c.mu.Lock()
+		c.ks = nil
+		c.mu.Unlock()
+	}
+
+	if ifIndex > 0 && dnsBackend != nil {
+		if err := dnsBackend.RevertDNS(ifIndex); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("revert DNS: %w", err)
+		}
+	}
+
+	if routes != nil {
+		if err := routes.Down(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("teardown routes: %w", err)
+		}
+		c.mu.Lock()
+		c.routes = nil
+		c.mu.Unlock()
+	}
+
+	if sm != nil {
+		if err := sm.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("teardown stealth: %w", err)
+		}
+		c.mu.Lock()
+		c.stealthMgr = nil
+		c.mu.Unlock()
+	}
+
+	if wg != nil {
+		if err := wg.Down(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("teardown wireguard: %w", err)
+		}
+		wg.Close()
+		c.mu.Lock()
+		c.wg = nil
+		c.mu.Unlock()
+	}
+
+	return firstErr
+}
+
+// ForwardedPort returns the currently assigned external port (0 if none).
+func (c *Connection) ForwardedPort() uint16 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.portFwd != nil {
+		return c.portFwd.Port()
+	}
+	return 0
+}
+
+func (c *Connection) setState(state State) {
+	c.mu.Lock()
+	c.info.State = state
+	c.info.LastError = nil
+	c.mu.Unlock()
+
+	if c.onState != nil {
+		c.onState(state)
+	}
+}
+
+func (c *Connection) setError(err error) {
+	c.mu.Lock()
+	c.info.State = StateError
+	c.info.LastError = err
+	c.mu.Unlock()
+
+	if c.onState != nil {
+		c.onState(StateError)
+	}
+}
