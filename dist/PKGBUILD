@@ -13,14 +13,16 @@ backup=()
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
 sha256sums=('SKIP')
 
+_srcdir="pVPN-${pkgver}"
+
 prepare() {
-  cd "${pkgname}-${pkgver}"
+  cd "${_srcdir}"
   export GOPATH="${srcdir}/gopath"
   go mod download
 }
 
 build() {
-  cd "${pkgname}-${pkgver}"
+  cd "${_srcdir}"
   export CGO_CPPFLAGS="${CPPFLAGS}"
   export CGO_CFLAGS="${CFLAGS}"
   export CGO_CXXFLAGS="${CXXFLAGS}"
@@ -36,7 +38,7 @@ build() {
 }
 
 package() {
-  cd "${pkgname}-${pkgver}"
+  cd "${_srcdir}"
   install -Dm755 pvpnd   "${pkgdir}/usr/bin/pvpnd"
   install -Dm755 pvpn    "${pkgdir}/usr/bin/pvpn"
   install -Dm755 pvpnctl "${pkgdir}/usr/bin/pvpnctl"
