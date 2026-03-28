@@ -48,14 +48,15 @@ func run() error {
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	tui.SetProgram(p)
 
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if err != nil {
 		return fmt.Errorf("TUI error: %w", err)
 	}
 
 	// Safety net for standalone mode only — clean up leftover VPN state.
 	// In daemon mode the daemon owns the VPN lifecycle; cleaning up here
 	// would nuke the kill switch while the connection is still active.
-	if !app.IsDaemonMode() {
+	if finalApp, ok := finalModel.(tui.App); ok && !finalApp.IsDaemonMode() {
 		vpn.CleanupIfNoTunnel()
 	}
 

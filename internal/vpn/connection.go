@@ -548,24 +548,13 @@ func (c *Connection) doReconnect(ctx context.Context) {
 	c.mu.RUnlock()
 
 	// Tear down the broken connection but preserve the kill switch
+	log.Printf("Reconnect: tearing down stale connection (keepKillSwitch=%v)", hasKillSwitch)
 	c.teardown(hasKillSwitch)
-
-	// Open a pinhole for the Proton API so we can fetch a new certificate
-	if hasKillSwitch {
-		c.mu.RLock()
-		activeKS := c.ks
-		c.mu.RUnlock()
-		if activeKS != nil {
-			if err := activeKS.AllowAPITraffic(c.client.BaseURL()); err != nil {
-				if c.onLog != nil {
-					c.onLog(fmt.Sprintf("Kill switch: failed to allow API traffic: %v", err))
-				}
-			}
-		}
-	}
+	log.Printf("Reconnect: teardown complete")
 
 	backoff := 2 * time.Second
 	maxBackoff := 2 * time.Minute
+	pinholeOpen := false
 
 	for attempt := 1; ; attempt++ {
 		select {
@@ -580,11 +569,27 @@ func (c *Connection) doReconnect(ctx context.Context) {
 		}
 
 		// Wait for the underlying network before burning an attempt
+		log.Printf("Reconnect: waiting for network...")
 		if !c.waitForNetwork(ctx, 30*time.Second) {
-			if c.onLog != nil {
-				c.onLog("Waiting for network...")
-			}
+			log.Printf("Reconnect: network still not available, retrying wait...")
 			continue
+		}
+		log.Printf("Reconnect: network is back")
+
+		// Open API pinhole after network is confirmed up (needs DNS).
+		// Only do this once — the pinhole persists across attempts.
+		if hasKillSwitch && !pinholeOpen {
+			c.mu.RLock()
+			activeKS := c.ks
+			c.mu.RUnlock()
+			if activeKS != nil {
+				if err := activeKS.AllowAPITraffic(c.client.BaseURL()); err != nil {
+					log.Printf("Reconnect: failed to open API pinhole: %v", err)
+				} else {
+					log.Printf("Reconnect: API pinhole opened")
+					pinholeOpen = true
+				}
+			}
 		}
 
 		log.Printf("Reconnect attempt %d...", attempt)
@@ -658,9 +663,9 @@ func (c *Connection) doReconnect(ctx context.Context) {
 	}
 }
 
-// waitForNetwork polls until the default gateway is reachable, meaning the
-// underlying network (WiFi/ethernet) is back after suspend. Returns true if
-// network came back within the timeout, false otherwise.
+// waitForNetwork polls until a default gateway is present in the main routing
+// table, meaning the underlying network (WiFi/ethernet) is back after suspend.
+// Returns true if network came back within the timeout, false otherwise.
 func (c *Connection) waitForNetwork(ctx context.Context, timeout time.Duration) bool {
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -673,19 +678,32 @@ func (c *Connection) waitForNetwork(ctx context.Context, timeout time.Duration) 
 		case <-deadline:
 			return false
 		case <-ticker.C:
-			// Check if any non-loopback interface has a default route.
-			// This is a lightweight netlink check — no actual traffic sent.
-			routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
-			if err != nil {
-				continue
-			}
-			for _, r := range routes {
-				if r.Dst == nil && r.Gw != nil {
-					return true
-				}
+			if hasDefaultRoute() {
+				return true
 			}
 		}
 	}
+}
+
+// hasDefaultRoute checks the main routing table (254) for a default route
+// with a gateway. This is a lightweight netlink check — no traffic is sent.
+func hasDefaultRoute() bool {
+	// Filter to main table only — we don't want to match the VPN table's
+	// default route which has no gateway.
+	filter := &netlink.Route{Table: 254} // main table
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V4, filter, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return false
+	}
+	for _, r := range routes {
+		// Default route: Dst is nil or 0.0.0.0/0, and has a gateway
+		isDefault := r.Dst == nil || (r.Dst.IP.Equal(net.IPv4zero) && r.Dst.Mask != nil &&
+			net.IP(r.Dst.Mask).Equal(net.IPv4zero))
+		if isDefault && r.Gw != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // Stats returns the current WireGuard peer statistics.
