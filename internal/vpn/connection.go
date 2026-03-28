@@ -82,6 +82,9 @@ type Connection struct {
 	lastKillSwitch  bool
 	lastProtocol    string
 	lastCustomDNS   []string
+
+	// Wake channel — poked by daemon on system resume to skip backoff
+	wakeCh chan struct{}
 }
 
 // tunnelLink returns the netlink.Link for whichever tunnel is active.
@@ -112,6 +115,7 @@ func NewConnection(client *api.Client, dnsBackend network.DNSBackend) *Connectio
 		client:     client,
 		dnsBackend: dnsBackend,
 		info:       ConnectionInfo{State: StateDisconnected},
+		wakeCh:     make(chan struct{}, 1),
 	}
 }
 
@@ -218,11 +222,13 @@ func (c *Connection) connectSmart(ctx context.Context, server *api.LogicalServer
 func (c *Connection) connectWithProtocol(ctx context.Context, server *api.LogicalServer, kp *api.KeyPair, cert *api.CertificateResponse, certFeatures api.CertificateFeatures, enableKillSwitch bool, protocol string, customDNS []string, laTimeout ...time.Duration) error {
 	c.mu.Lock()
 	c.protocol = protocol
+	// If a kill switch already exists (reconnection), preserve it on failure
+	existingKS := c.ks != nil
 	c.mu.Unlock()
 
 	err := c.doConnect(ctx, server, kp, cert, certFeatures, enableKillSwitch, protocol, customDNS, laTimeout...)
 	if err != nil {
-		c.teardown()
+		c.teardown(existingKS)
 		c.setState(StateDisconnected)
 		return err
 	}
@@ -418,6 +424,18 @@ func (c *Connection) Disconnect() error {
 	return nil
 }
 
+// TriggerReconnect forces an immediate reconnection check.
+// Called by the daemon when the system wakes from suspend.
+func (c *Connection) TriggerReconnect() {
+	if c.State() != StateConnected && c.State() != StateReconnecting {
+		return
+	}
+	select {
+	case c.wakeCh <- struct{}{}:
+	default:
+	}
+}
+
 // monitorConnection watches the WireGuard handshake and triggers
 // reconnection if the tunnel goes stale.
 func (c *Connection) monitorConnection() {
@@ -443,6 +461,37 @@ func (c *Connection) monitorConnection() {
 			select {
 			case <-ctx.Done():
 				return
+			case <-c.wakeCh:
+				// System just woke up — check immediately
+				if c.State() != StateConnected {
+					return
+				}
+				if c.onLog != nil {
+					c.onLog("System resumed from sleep, checking connection...")
+				}
+				// Wait for the network to come back (WiFi reconnect, DHCP, etc.)
+				// then check whether the tunnel survived suspend.
+				if !c.waitForNetwork(ctx, 15*time.Second) {
+					c.setState(StateReconnecting)
+					if c.onLog != nil {
+						c.onLog("Network not available after wake, reconnecting...")
+					}
+					c.doReconnect(ctx)
+					return
+				}
+				stats, err := c.Stats()
+				if err != nil || time.Since(stats.LastHandshake) > 30*time.Second {
+					c.setState(StateReconnecting)
+					if c.onLog != nil {
+						c.onLog("Connection stale after wake, reconnecting...")
+					}
+					c.doReconnect(ctx)
+					return
+				}
+				if c.onLog != nil {
+					c.onLog("Connection still healthy after wake")
+				}
+				missedHandshakes = 0
 			case <-ticker.C:
 				if c.State() != StateConnected {
 					return
@@ -471,6 +520,9 @@ func (c *Connection) monitorConnection() {
 }
 
 // doReconnect attempts to reconnect with exponential backoff.
+// It retries indefinitely until the connection succeeds or the context
+// is cancelled (user disconnect). A wake signal on wakeCh resets the
+// backoff so reconnection is attempted immediately after resume.
 func (c *Connection) doReconnect(ctx context.Context) {
 	c.mu.RLock()
 	server := c.lastServer
@@ -484,25 +536,56 @@ func (c *Connection) doReconnect(ctx context.Context) {
 		return
 	}
 
-	// Tear down the broken connection
-	c.teardown()
+	// Check if kill switch is active — if so, keep it during reconnection
+	// to prevent traffic leaks.
+	c.mu.RLock()
+	hasKillSwitch := c.ks != nil
+	c.mu.RUnlock()
+
+	// Tear down the broken connection but preserve the kill switch
+	c.teardown(hasKillSwitch)
+
+	// Open a pinhole for the Proton API so we can fetch a new certificate
+	if hasKillSwitch {
+		c.mu.RLock()
+		activeKS := c.ks
+		c.mu.RUnlock()
+		if activeKS != nil {
+			if err := activeKS.AllowAPITraffic(c.client.BaseURL()); err != nil {
+				if c.onLog != nil {
+					c.onLog(fmt.Sprintf("Kill switch: failed to allow API traffic: %v", err))
+				}
+			}
+		}
+	}
 
 	backoff := 2 * time.Second
 	maxBackoff := 2 * time.Minute
-	maxAttempts := 10
 
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	for attempt := 1; ; attempt++ {
 		select {
 		case <-ctx.Done():
+			// User-initiated disconnect — now fully tear down kill switch
+			if hasKillSwitch {
+				c.teardown()
+			}
 			c.setState(StateDisconnected)
 			return
 		default:
 		}
 
-		if c.onLog != nil {
-			c.onLog(fmt.Sprintf("Reconnect attempt %d/%d...", attempt, maxAttempts))
+		// Wait for the underlying network before burning an attempt
+		if !c.waitForNetwork(ctx, 30*time.Second) {
+			if c.onLog != nil {
+				c.onLog("Waiting for network...")
+			}
+			continue
 		}
-		c.setState(StateConnecting)
+
+		if c.onLog != nil {
+			c.onLog(fmt.Sprintf("Reconnect attempt %d...", attempt))
+		}
+		c.setState(StateReconnecting)
 
 		kp, err := api.GenerateKeyPair()
 		if err != nil {
@@ -517,6 +600,15 @@ func (c *Connection) doReconnect(ctx context.Context) {
 
 			err = c.connectWithProtocol(ctx, server, kp, cert, certFeats, ks, protocol, customDNS, 15*time.Second)
 			if err == nil {
+				// Close the API pinhole now that we're connected
+				if hasKillSwitch {
+					c.mu.RLock()
+					activeKS := c.ks
+					c.mu.RUnlock()
+					if activeKS != nil {
+						activeKS.BlockAPITraffic()
+					}
+				}
 				if c.onLog != nil {
 					c.onLog("Reconnected successfully")
 				}
@@ -526,10 +618,18 @@ func (c *Connection) doReconnect(ctx context.Context) {
 		}
 
 	retry:
+		// Wait for backoff, but allow wake signal to skip the wait
 		select {
 		case <-ctx.Done():
+			if hasKillSwitch {
+				c.teardown()
+			}
 			c.setState(StateDisconnected)
 			return
+		case <-c.wakeCh:
+			// System woke up — retry immediately with reset backoff
+			backoff = 2 * time.Second
+			continue
 		case <-time.After(backoff):
 		}
 
@@ -538,11 +638,36 @@ func (c *Connection) doReconnect(ctx context.Context) {
 			backoff = maxBackoff
 		}
 	}
+}
 
-	if c.onLog != nil {
-		c.onLog("Reconnection failed after max attempts")
+// waitForNetwork polls until the default gateway is reachable, meaning the
+// underlying network (WiFi/ethernet) is back after suspend. Returns true if
+// network came back within the timeout, false otherwise.
+func (c *Connection) waitForNetwork(ctx context.Context, timeout time.Duration) bool {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline:
+			return false
+		case <-ticker.C:
+			// Check if any non-loopback interface has a default route.
+			// This is a lightweight netlink check — no actual traffic sent.
+			routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
+			if err != nil {
+				continue
+			}
+			for _, r := range routes {
+				if r.Dst == nil && r.Gw != nil {
+					return true
+				}
+			}
+		}
 	}
-	c.setState(StateDisconnected)
 }
 
 // Stats returns the current WireGuard peer statistics.
@@ -566,7 +691,11 @@ func (c *Connection) Stats() (*PeerStats, error) {
 }
 
 // teardown reverses all connection steps in reverse order.
-func (c *Connection) teardown() error {
+// If keepKillSwitch is true, the kill switch rules are left active so traffic
+// cannot leak during reconnection.
+func (c *Connection) teardown(keepKillSwitch ...bool) error {
+	preserveKS := len(keepKillSwitch) > 0 && keepKillSwitch[0]
+
 	c.mu.Lock()
 	pf := c.portFwd
 	c.portFwd = nil
@@ -595,7 +724,7 @@ func (c *Connection) teardown() error {
 		c.mu.Unlock()
 	}
 
-	if ks != nil {
+	if ks != nil && !preserveKS {
 		if err := ks.Disable(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("disable kill switch: %w", err)
 		}

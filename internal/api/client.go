@@ -80,6 +80,11 @@ func (c *Client) LoginEmail() string {
 	return c.loginEmail
 }
 
+// BaseURL returns the API base URL (needed for kill switch pinhole during reconnection).
+func (c *Client) BaseURL() string {
+	return c.baseURL
+}
+
 // IsAuthenticated returns true if the client has auth tokens.
 func (c *Client) IsAuthenticated() bool {
 	c.mu.RLock()

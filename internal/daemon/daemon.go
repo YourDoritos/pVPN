@@ -36,9 +36,10 @@ type Daemon struct {
 
 	sessionReady chan struct{} // closed when initSession completes
 
-	listener net.Listener
-	ctx      context.Context
-	cancel   context.CancelFunc
+	listener     net.Listener
+	sleepMon     *sleepMonitor
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 // New creates a new daemon instance.
@@ -78,6 +79,9 @@ func (d *Daemon) Run(socketPath string) error {
 	// Clean up any stale VPN state from a previous daemon instance
 	vpn.ForceCleanup()
 
+	// Monitor system suspend/resume to trigger VPN reconnection on wake
+	d.sleepMon = newSleepMonitor(d.onSystemWake)
+
 	// Try to restore session and load servers in background
 	go d.initSession()
 
@@ -103,6 +107,7 @@ func (d *Daemon) Run(socketPath string) error {
 // Stop shuts down the daemon.
 func (d *Daemon) Stop() {
 	d.cancel()
+	d.sleepMon.Stop()
 	if d.listener != nil {
 		d.listener.Close()
 	}
@@ -547,6 +552,20 @@ func (d *Daemon) userTier() int {
 	return 0
 }
 
+// onSystemWake is called by the sleep monitor when the system resumes from suspend.
+func (d *Daemon) onSystemWake() {
+	d.mu.RLock()
+	conn := d.conn
+	d.mu.RUnlock()
+
+	if conn == nil {
+		return
+	}
+
+	// Signal the connection's monitor/reconnect loop to act immediately
+	conn.TriggerReconnect()
+}
+
 func (d *Daemon) broadcast(evt *ipc.Event) {
 	d.clientsMu.RLock()
 	defer d.clientsMu.RUnlock()
@@ -568,8 +587,15 @@ func (d *Daemon) broadcastStats() {
 			conn := d.conn
 			d.mu.RUnlock()
 
-			if conn == nil || conn.State() != vpn.StateConnected {
+			if conn == nil {
 				return
+			}
+
+			// During reconnection, keep the goroutine alive but skip stats.
+			// This prevents the goroutine from exiting permanently when the
+			// connection temporarily enters Reconnecting/Connecting state.
+			if conn.State() != vpn.StateConnected {
+				continue
 			}
 
 			stats, err := conn.Stats()
