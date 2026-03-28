@@ -12,10 +12,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/grennboy527/pvpn/internal/api"
-	"github.com/grennboy527/pvpn/internal/config"
-	"github.com/grennboy527/pvpn/internal/network"
-	"github.com/grennboy527/pvpn/internal/vpn"
+	"github.com/YourDoritos/pvpn/internal/api"
+	"github.com/YourDoritos/pvpn/internal/config"
+	"github.com/YourDoritos/pvpn/internal/network"
+	"github.com/YourDoritos/pvpn/internal/vpn"
 )
 
 func main() {

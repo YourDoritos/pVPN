@@ -7,10 +7,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/grennboy527/pvpn/internal/api"
-	"github.com/grennboy527/pvpn/internal/config"
-	"github.com/grennboy527/pvpn/internal/daemon"
-	"github.com/grennboy527/pvpn/internal/ipc"
+	"github.com/YourDoritos/pvpn/internal/api"
+	"github.com/YourDoritos/pvpn/internal/config"
+	"github.com/YourDoritos/pvpn/internal/daemon"
+	"github.com/YourDoritos/pvpn/internal/ipc"
 )
 
 func main() {

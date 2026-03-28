@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/grennboy527/pvpn/internal/api"
-	"github.com/grennboy527/pvpn/internal/network"
-	"github.com/grennboy527/pvpn/internal/stealth"
+	"github.com/YourDoritos/pvpn/internal/api"
+	"github.com/YourDoritos/pvpn/internal/network"
+	"github.com/YourDoritos/pvpn/internal/stealth"
 	"github.com/vishvananda/netlink"
 )
 

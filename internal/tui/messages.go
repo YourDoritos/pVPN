@@ -1,8 +1,8 @@
 package tui
 
 import (
-	"github.com/grennboy527/pvpn/internal/api"
-	"github.com/grennboy527/pvpn/internal/vpn"
+	"github.com/YourDoritos/pvpn/internal/api"
+	"github.com/YourDoritos/pvpn/internal/vpn"
 )
 
 // Cross-view messages

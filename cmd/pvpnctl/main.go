@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/grennboy527/pvpn/internal/ipc"
+	"github.com/YourDoritos/pvpn/internal/ipc"
 )
 
 func main() {

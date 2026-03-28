@@ -7,7 +7,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
-	"github.com/grennboy527/pvpn/internal/network"
+	"github.com/YourDoritos/pvpn/internal/network"
 )
 
 // CleanupIfNoTunnel checks if pvpn0 is still alive. If it is (kernel WG),

@@ -44,7 +44,7 @@ The daemon is enabled automatically. Just run `pvpn`.
 ### From source
 
 ```bash
-git clone https://github.com/grennboy527/pVPN.git
+git clone https://github.com/YourDoritos/pVPN.git
 cd pVPN
 sudo make install
 sudo systemctl daemon-reload

@@ -5,10 +5,10 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/grennboy527/pvpn/internal/api"
-	"github.com/grennboy527/pvpn/internal/config"
-	"github.com/grennboy527/pvpn/internal/tui"
-	"github.com/grennboy527/pvpn/internal/vpn"
+	"github.com/YourDoritos/pvpn/internal/api"
+	"github.com/YourDoritos/pvpn/internal/config"
+	"github.com/YourDoritos/pvpn/internal/tui"
+	"github.com/YourDoritos/pvpn/internal/vpn"
 )
 
 func main() {

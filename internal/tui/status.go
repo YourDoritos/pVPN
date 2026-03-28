@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/grennboy527/pvpn/internal/ipc"
-	"github.com/grennboy527/pvpn/internal/vpn"
+	"github.com/YourDoritos/pvpn/internal/ipc"
+	"github.com/YourDoritos/pvpn/internal/vpn"
 )
 
 type tickMsg time.Time

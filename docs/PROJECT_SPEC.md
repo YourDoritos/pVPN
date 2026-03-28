@@ -725,7 +725,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now pvpnd
 
 # Option 2: From source
-git clone https://github.com/grennboy527/pvpn.git
+git clone https://github.com/YourDoritos/pvpn.git
 cd pvpn
 sudo make install
 sudo systemctl daemon-reload

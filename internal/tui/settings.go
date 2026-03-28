@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/grennboy527/pvpn/internal/config"
-	"github.com/grennboy527/pvpn/internal/ipc"
+	"github.com/YourDoritos/pvpn/internal/config"
+	"github.com/YourDoritos/pvpn/internal/ipc"
 )
 
 type settingItem struct {

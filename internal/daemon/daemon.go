@@ -11,11 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/grennboy527/pvpn/internal/api"
-	"github.com/grennboy527/pvpn/internal/config"
-	"github.com/grennboy527/pvpn/internal/ipc"
-	"github.com/grennboy527/pvpn/internal/network"
-	"github.com/grennboy527/pvpn/internal/vpn"
+	"github.com/YourDoritos/pvpn/internal/api"
+	"github.com/YourDoritos/pvpn/internal/config"
+	"github.com/YourDoritos/pvpn/internal/ipc"
+	"github.com/YourDoritos/pvpn/internal/network"
+	"github.com/YourDoritos/pvpn/internal/vpn"
 )
 
 // Daemon is the privileged VPN service.
@@ -34,6 +34,8 @@ type Daemon struct {
 	clients   map[*ipc.Conn]struct{}
 	clientsMu sync.RWMutex
 
+	sessionReady chan struct{} // closed when initSession completes
+
 	listener net.Listener
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -43,11 +45,12 @@ type Daemon struct {
 func New(cfg *config.Config, client *api.Client, store *api.SessionStore) *Daemon {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Daemon{
-		cfg:     cfg,
-		client:  client,
-		store:   store,
-		clients: make(map[*ipc.Conn]struct{}),
-		ctx:     ctx,
+		cfg:          cfg,
+		client:       client,
+		store:        store,
+		clients:      make(map[*ipc.Conn]struct{}),
+		sessionReady: make(chan struct{}),
+		ctx:          ctx,
 		cancel:  cancel,
 	}
 }
@@ -112,7 +115,18 @@ func (d *Daemon) Stop() {
 	vpn.ForceCleanup()
 }
 
+func (d *Daemon) signalSessionReady() {
+	select {
+	case <-d.sessionReady:
+		// already closed
+	default:
+		close(d.sessionReady)
+	}
+}
+
 func (d *Daemon) initSession() {
+	defer d.signalSessionReady()
+
 	if !d.client.IsAuthenticated() {
 		return
 	}
@@ -146,8 +160,12 @@ func (d *Daemon) autoConnect() {
 	if !d.cfg.Connection.AutoConnect {
 		return
 	}
-	// Wait for session init
-	time.Sleep(2 * time.Second)
+	// Wait for session init to finish (no fixed timeout — just wait for the signal)
+	select {
+	case <-d.sessionReady:
+	case <-d.ctx.Done():
+		return
+	}
 
 	d.mu.RLock()
 	authenticated := d.client.IsAuthenticated()

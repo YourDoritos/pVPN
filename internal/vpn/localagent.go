@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/ProtonVPN/go-vpn-lib/localAgent"
-	"github.com/grennboy527/pvpn/internal/api"
+	"github.com/YourDoritos/pvpn/internal/api"
 )
 
 const (

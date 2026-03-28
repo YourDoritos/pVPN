@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/grennboy527/pvpn/internal/config"
+	"github.com/YourDoritos/pvpn/internal/config"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/nacl/secretbox"
 )
