@@ -368,6 +368,10 @@ func (d *Daemon) doConnect(server *api.LogicalServer, protocol string) error {
 	}
 	d.mu.Unlock()
 
+	// Reload config so we pick up any settings the TUI changed
+	// (kill switch, netshield, etc.) since the daemon started.
+	d.cfg.Reload()
+
 	ctx := d.ctx
 
 	dnsBackend, err := network.DetectBackend()
@@ -542,7 +546,26 @@ func (d *Daemon) cmdLogout() *ipc.Response {
 }
 
 func (d *Daemon) cmdSettings(params json.RawMessage) *ipc.Response {
-	// For now, return current config as JSON
+	// Reload config from disk to pick up TUI changes, then apply any
+	// settings that can take effect on a live connection.
+	oldKS := d.cfg.Connection.KillSwitch
+	d.cfg.Reload()
+	newKS := d.cfg.Connection.KillSwitch
+
+	// Apply kill switch change to the live connection immediately
+	if oldKS != newKS {
+		d.mu.RLock()
+		conn := d.conn
+		d.mu.RUnlock()
+		if conn != nil && conn.State() == vpn.StateConnected {
+			if err := conn.SetKillSwitch(newKS); err != nil {
+				log.Printf("Live kill switch toggle failed: %v", err)
+			} else {
+				log.Printf("Kill switch %s on live connection", map[bool]string{true: "enabled", false: "disabled"}[newKS])
+			}
+		}
+	}
+
 	return &ipc.Response{OK: true, Data: ipc.MarshalData(d.cfg)}
 }
 

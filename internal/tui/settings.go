@@ -80,6 +80,10 @@ func (m SettingsModel) Update(msg tea.Msg, cfg *config.Config, dc *ipc.Client) (
 			if cfg != nil {
 				cfg.Save()
 				m.saved = true
+				// Notify daemon so live settings (kill switch) take effect immediately
+				if dc != nil {
+					go dc.NotifySettingsChanged()
+				}
 			}
 		}
 	}

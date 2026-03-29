@@ -394,6 +394,41 @@ func (c *Connection) doConnect(ctx context.Context, server *api.LogicalServer, k
 	return nil
 }
 
+// SetKillSwitch enables or disables the kill switch on a live connection.
+// Can be called while connected — takes effect immediately.
+func (c *Connection) SetKillSwitch(enable bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if enable {
+		if c.ks != nil {
+			return nil // already enabled
+		}
+		// Need the server IP for the allow rule
+		serverIP := net.ParseIP(c.info.ServerIP)
+		if serverIP == nil {
+			return fmt.Errorf("no active connection")
+		}
+		ks, err := NewKillSwitch()
+		if err != nil {
+			return err
+		}
+		if err := ks.Enable(serverIP); err != nil {
+			return err
+		}
+		c.ks = ks
+		c.lastKillSwitch = true
+	} else {
+		if c.ks == nil {
+			return nil // already disabled
+		}
+		c.ks.Disable()
+		c.ks = nil
+		c.lastKillSwitch = false
+	}
+	return nil
+}
+
 // EnableReconnect enables automatic reconnection with exponential backoff.
 // Must be called before Connect. On disconnect due to error (not user-initiated),
 // the connection will automatically retry.

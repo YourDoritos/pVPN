@@ -170,6 +170,12 @@ func (c *Client) Servers() (*ServersData, error) {
 	return &data, nil
 }
 
+// NotifySettingsChanged tells the daemon to reload config and apply any
+// settings that can take effect on a live connection (e.g., kill switch).
+func (c *Client) NotifySettingsChanged() {
+	c.Do("settings", nil)
+}
+
 func (c *Client) Logout() error {
 	resp, err := c.Do("logout", nil)
 	if err != nil {
