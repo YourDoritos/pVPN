@@ -34,6 +34,13 @@ type Daemon struct {
 	// because cmdStatus acquires d.mu.RLock and must stay responsive.
 	connectMu sync.Mutex
 
+	// initSessionMu gates retries of initSession from the wake / network
+	// change handlers. If the boot-time initSession failed (e.g. WiFi
+	// not yet up, DNS not ready) the daemon would otherwise stay without
+	// a server list until restart. TryLock ensures back-to-back wake +
+	// netmon events don't pile up multiple in-flight retries.
+	initSessionMu sync.Mutex
+
 	cfg    *config.Config
 	client *api.Client
 	store  *api.SessionStore
@@ -225,13 +232,21 @@ func (d *Daemon) autoConnect() {
 	case <-d.ctx.Done():
 		return
 	}
+	d.doAutoConnect()
+}
 
+// doAutoConnect runs the auto-connect logic assuming session init has
+// already completed. Split from autoConnect so a successful late
+// initSession recovery (see retryInitSessionIfStuck) can re-trigger
+// it without waiting on sessionReady, which is already closed.
+func (d *Daemon) doAutoConnect() {
 	d.mu.RLock()
 	authenticated := d.client.IsAuthenticated()
 	servers := d.serverList
+	conn := d.conn
 	d.mu.RUnlock()
 
-	if !authenticated || len(servers) == 0 {
+	if !authenticated || len(servers) == 0 || conn != nil {
 		return
 	}
 
@@ -663,6 +678,8 @@ func (d *Daemon) userTier() int {
 
 // onSystemWake is called by the sleep monitor when the system resumes from suspend.
 func (d *Daemon) onSystemWake() {
+	d.retryInitSessionIfStuck()
+
 	d.mu.RLock()
 	conn := d.conn
 	d.mu.RUnlock()
@@ -688,6 +705,8 @@ func (d *Daemon) onSystemWake() {
 // path needs to reinstall its LAN routes to keep local network
 // access working without tearing down the tunnel.
 func (d *Daemon) onNetworkChange() {
+	d.retryInitSessionIfStuck()
+
 	d.mu.RLock()
 	conn := d.conn
 	d.mu.RUnlock()
@@ -697,6 +716,54 @@ func (d *Daemon) onNetworkChange() {
 	}
 	conn.RefreshLANSnapshot()
 	conn.TriggerReconnect()
+}
+
+// retryInitSessionIfStuck recovers from a startup where the initial
+// initSession failed before the network was usable (e.g. preboot kill
+// switch + DHCP not yet completed, DNS not ready). In that state the
+// daemon kept the saved session but never loaded a server list, and
+// would stay that way until the next process restart — every connect
+// attempt failing with "no servers loaded (not authenticated?)".
+//
+// We re-run initSession when:
+//   - the session is still authenticated (so we have something to
+//     restore), and
+//   - serverList is empty (we never got past the initial fetch), and
+//   - no VPN is up (we don't want to interfere with a live tunnel).
+//
+// initSessionMu.TryLock prevents a flurry of WiFi link events from
+// stacking up multiple in-flight retries; if one is already running,
+// the next event becomes a no-op and the in-flight call will see the
+// fresh network state itself.
+//
+// On a successful recovery we also kick autoConnect once: the original
+// goroutine has already returned (sessionReady fired with no servers),
+// so without this the user would have to connect manually even with
+// AutoConnect enabled.
+func (d *Daemon) retryInitSessionIfStuck() {
+	d.mu.RLock()
+	needsRetry := d.client.IsAuthenticated() &&
+		len(d.serverList) == 0 &&
+		d.conn == nil
+	d.mu.RUnlock()
+	if !needsRetry {
+		return
+	}
+	if !d.initSessionMu.TryLock() {
+		return
+	}
+	go func() {
+		defer d.initSessionMu.Unlock()
+		log.Printf("Bootstrap recovery: re-running initSession (no servers loaded)")
+		d.initSession()
+
+		d.mu.RLock()
+		recovered := len(d.serverList) > 0 && d.conn == nil
+		d.mu.RUnlock()
+		if recovered && d.cfg.Connection.AutoConnect {
+			go d.doAutoConnect()
+		}
+	}()
 }
 
 func (d *Daemon) broadcast(evt *ipc.Event) {
