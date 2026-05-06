@@ -62,11 +62,24 @@ func (m *StatusModel) SetDisconnected() {
 }
 
 // Daemon mode setters
-func (m *StatusModel) SetConnectedDaemon(server, country string) {
+//
+// SetConnectedDaemon is the lightweight setter used by the IPC
+// state-changed event handler — the event payload only carries the
+// server name, country, and entry country, so this function deliberately
+// does NOT touch ServerIP / ForwardedPort / Duration. A pollDaemonStatus
+// follow-up should fire right after to repopulate those from a full
+// StatusData. We also avoid resetting connectedAt when we were already
+// connected: a reconnect event would otherwise snap the displayed
+// Duration back to 0s mid-session.
+func (m *StatusModel) SetConnectedDaemon(server, country, entryCountry string) {
+	wasConnected := m.state == "connected"
 	m.state = "connected"
 	m.serverName = server
 	m.country = country
-	m.connectedAt = time.Now()
+	m.entryCountry = entryCountry
+	if !wasConnected || m.connectedAt.IsZero() {
+		m.connectedAt = time.Now()
+	}
 	m.err = nil
 }
 

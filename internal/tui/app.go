@@ -575,10 +575,14 @@ func (a App) handleDaemonEvent(evt *ipc.Event) (tea.Model, tea.Cmd) {
 			a.servers.SetVPNState("connecting")
 			return a, SpinnerTickCmd()
 		case "Connected":
-			a.status.SetConnectedDaemon(data.Server, data.Country)
+			// State event only carries server/country/entryCountry. Fire
+			// pollDaemonStatus alongside the tick so ServerIP, ForwardedPort
+			// and the daemon's authoritative Duration repopulate the view
+			// without waiting for the next 2s tick.
+			a.status.SetConnectedDaemon(data.Server, data.Country, data.EntryCountry)
 			a.servers.SetVPNState("connected")
 			a.servers.SetConnectedServer(data.Server)
-			return a, TickCmd()
+			return a, tea.Batch(a.pollDaemonStatus(), TickCmd())
 		case "Reconnecting":
 			a.view = ViewStatus
 			a.status.SetReconnecting()
