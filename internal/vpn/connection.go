@@ -2,6 +2,7 @@ package vpn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -627,8 +628,15 @@ func (c *Connection) monitorConnection() {
 					c.doReconnect(ctx)
 					return
 				}
+				// WireGuard rekeys every ~120s by design, so a tunnel
+				// whose last handshake is 60-120s old is perfectly
+				// healthy. The threshold here must be longer than that
+				// rekey interval, otherwise routine wake/network-change
+				// pokes will tear down a working tunnel mid-cycle and
+				// burn through Proton's cert API quota (HTTP 429 / err
+				// 2028). 150s gives the rekey a 30s grace window.
 				stats, err := c.Stats()
-				if err != nil || time.Since(stats.LastHandshake) > 30*time.Second {
+				if err != nil || time.Since(stats.LastHandshake) > 150*time.Second {
 					log.Printf("Connection stale after wake (err=%v), triggering reconnect", err)
 					c.setState(StateReconnecting)
 					if c.onLog != nil {
@@ -742,7 +750,25 @@ retryLoop:
 		}
 		log.Printf("Reconnect attempt %d failed: %v", attempt, err)
 
+		// If Proton is rate-limiting cert issuance (HTTP 429 / err 2028),
+		// the next attempt in seconds will fail too — and every one of
+		// those failed attempts pushes the cooldown further out. Sleep
+		// long enough that the quota window closes before we try again.
+		// We also don't honor the wakeCh shortcut here: a wake during
+		// the cooldown means a netlink event fired, not the user
+		// reconnecting, and skipping the wait would just re-trip the
+		// limiter.
+		wait := backoff
+		if isCertRateLimit(err) {
+			wait = 5 * time.Minute
+			log.Printf("Reconnect: cert API is rate-limiting us, waiting %s before retry", wait)
+			if c.onLog != nil {
+				c.onLog("Cert API rate-limited, waiting 5 min...")
+			}
+		}
+
 		// Wait for backoff, but allow wake signal to skip the wait
+		// (only when not rate-limited — see comment above).
 		select {
 		case <-ctx.Done():
 			if hasKillSwitch {
@@ -751,14 +777,43 @@ retryLoop:
 			c.setState(StateDisconnected)
 			return
 		case <-c.wakeCh:
-			// System woke up — retry immediately with reset backoff
-			backoff = 2 * time.Second
-			continue retryLoop
-		case <-time.After(backoff):
+			if isCertRateLimit(err) {
+				// Drop the wake; keep waiting out the cooldown.
+				select {
+				case <-ctx.Done():
+					if hasKillSwitch {
+						c.teardown()
+					}
+					c.setState(StateDisconnected)
+					return
+				case <-time.After(wait):
+				}
+			} else {
+				// System woke up — retry immediately with reset backoff
+				backoff = 2 * time.Second
+				continue retryLoop
+			}
+		case <-time.After(wait):
 		}
 
-		backoff = nextBackoff(backoff, maxBackoff)
+		if isCertRateLimit(err) {
+			backoff = 2 * time.Second
+		} else {
+			backoff = nextBackoff(backoff, maxBackoff)
+		}
 	}
+}
+
+// isCertRateLimit reports whether err is Proton's "too many certificates
+// generated" response (API code 2028 / HTTP 429), regardless of how
+// many wrap layers it's been through (request cert: max retries
+// exceeded: ...).
+func isCertRateLimit(err error) bool {
+	var reqErr *api.RequestError
+	if !errors.As(err, &reqErr) {
+		return false
+	}
+	return reqErr.Code == 2028 || reqErr.HTTPStatus == 429
 }
 
 // reconnectAttempt performs a single reconnect attempt: generate keys,

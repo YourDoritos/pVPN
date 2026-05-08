@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -34,6 +35,15 @@ type networkMonitor struct {
 	onChange func()
 	stop     chan struct{}
 	wg       sync.WaitGroup
+
+	// seenAddrs deduplicates RTM_NEWADDR notifications for addresses
+	// that are already on an interface. The kernel re-emits NEWADDR
+	// every time an IPv6 SLAAC lifetime is refreshed by a router
+	// advertisement (typically every 3-10s on home networks), and
+	// every refresh would otherwise trigger a reconnect check and
+	// eventually rate-limit us off Proton's cert API.
+	addrMu    sync.Mutex
+	seenAddrs map[string]bool
 }
 
 // newNetworkMonitor starts netlink subscriptions and returns a running
@@ -42,8 +52,9 @@ type networkMonitor struct {
 // which is slower but still correct.
 func newNetworkMonitor(onChange func()) *networkMonitor {
 	m := &networkMonitor{
-		onChange: onChange,
-		stop:     make(chan struct{}),
+		onChange:  onChange,
+		stop:      make(chan struct{}),
+		seenAddrs: make(map[string]bool),
 	}
 
 	linkCh := make(chan netlink.LinkUpdate, 16)
@@ -111,6 +122,13 @@ func newNetworkMonitor(onChange func()) *networkMonitor {
 				if u.LinkAddress.IP != nil && u.LinkAddress.IP.IsLinkLocalUnicast() {
 					continue
 				}
+				// Drop pure refreshes — IPv6 RAs re-emit RTM_NEWADDR
+				// for an address already on the interface every few
+				// seconds. Only kick the debouncer on actual add/del
+				// transitions.
+				if !m.transitionedAddr(u.LinkIndex, u.LinkAddress.String(), u.NewAddr) {
+					continue
+				}
 				log.Printf("Network monitor: addr %s ifindex=%d new=%v",
 					u.LinkAddress.String(), u.LinkIndex, u.NewAddr)
 				m.kick(trigger)
@@ -174,6 +192,28 @@ func (m *networkMonitor) Stop() {
 		close(m.stop)
 	}
 	m.wg.Wait()
+}
+
+// transitionedAddr reports whether the given address represents an
+// actual change in the interface's address set. RTM_NEWADDR for an
+// IP already known on the same ifindex (lifetime refresh) returns
+// false; a true add or a true remove returns true.
+func (m *networkMonitor) transitionedAddr(ifindex int, addr string, isNew bool) bool {
+	key := fmt.Sprintf("%d/%s", ifindex, addr)
+	m.addrMu.Lock()
+	defer m.addrMu.Unlock()
+	if isNew {
+		if m.seenAddrs[key] {
+			return false
+		}
+		m.seenAddrs[key] = true
+		return true
+	}
+	if !m.seenAddrs[key] {
+		return false
+	}
+	delete(m.seenAddrs, key)
+	return true
 }
 
 // kick pushes a non-blocking signal into the debounce channel.
