@@ -50,6 +50,9 @@ jobs:
   aur-publish:
     runs-on: ubuntu-latest
     needs: release
+    # Only publish to AUR from the upstream repo — forks don't have the
+    # AUR_SSH_KEY secret and shouldn't push to the upstream AUR package.
+    if: github.repository == 'YourDoritos/pVPN'
     steps:
       - uses: actions/checkout@v4
 
