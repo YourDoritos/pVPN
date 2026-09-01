@@ -423,7 +423,17 @@ func (c *Connection) doConnect(ctx context.Context, server *api.LogicalServer, k
 		dnsServers = []net.IP{net.ParseIP("10.2.0.1")}
 	}
 	if err := c.dnsBackend.SetDNS(tunnelIfIndex, dnsServers); err != nil {
-		return fmt.Errorf("setup DNS (%s): %w", c.dnsBackend.Name(), err)
+		// Deliberately fatal. The kill switch permits LAN egress so that
+		// local network access keeps working (see buildRules), which means
+		// a system resolver on the LAN would still be reachable if we
+		// carried on here, and queries would reach the ISP in plaintext.
+		// Failing the connect is the safe outcome; the error needs to say
+		// enough for the user to act on it.
+		return fmt.Errorf("setup DNS (%s): %w\n"+
+			"pVPN will not connect without control of DNS, because queries "+
+			"would otherwise reach your ISP unprotected. Enabling "+
+			"systemd-resolved is usually the most reliable fix",
+			c.dnsBackend.Name(), err)
 	}
 
 	// Step 5: Kill switch was already enabled at Step 0 (before tunnel
