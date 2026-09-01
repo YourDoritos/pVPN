@@ -119,6 +119,39 @@ yay -S pvpn-go
 The daemon is enabled automatically and the `pvpn` group is created.
 Add yourself to the group with `sudo usermod -aG pvpn $USER`, then run `pvpn`.
 
+### NUR (Nix/NixOS)
+
+First follow the setup instruction for the NUR [here](https://nur.nix-community.org/documentation/).
+
+Then install using the NixOS module (recommended):
+```nix
+{
+  imports = [
+    inputs.nur.repos.claymorwan.nixosModules.pvpn
+  ];
+
+  programs.pvpn = {
+    enable = true;
+    # Add yourself to user in the pvpn group
+    users = [
+      "<username>"
+    ];
+  };
+}
+```
+
+Alternatively, you can also add it to your package list (you will need to create and add yourself to the group manually):
+
+```nix
+{
+  environment.systemPackages = with pkgs; [
+    nur.repos.claymorwan.pvpn
+  ];
+}
+```
+> [!NOTE]
+> Report Nix related issues [here](https://github.com/claymorwan/nurpkgs).
+
 ### Build from source
 
 Requires Go 1.26+ (see `go.mod`).
