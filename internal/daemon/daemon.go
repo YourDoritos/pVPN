@@ -366,6 +366,7 @@ func (d *Daemon) cmdStatus() *ipc.Response {
 				data.Handshake = stats.LastHandshake.Unix()
 			}
 			data.ForwardedPort = conn.ForwardedPort()
+			data.ForwardedProto = conn.ForwardedProtocols()
 		}
 		d.mu.RLock()
 		data.Protocol = d.conn.Protocol()

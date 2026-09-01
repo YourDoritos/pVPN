@@ -49,14 +49,15 @@ func (s State) String() string {
 
 // ConnectionInfo holds details about the active connection.
 type ConnectionInfo struct {
-	ServerName    string
-	ServerIP      string
-	ServerCountry string
-	EntryCountry  string // Non-empty for Secure Core connections
-	ConnectedAt   time.Time
-	State         State
-	ForwardedPort uint16
-	LastError     error
+	ServerName     string
+	ServerIP       string
+	ServerCountry  string
+	EntryCountry   string // Non-empty for Secure Core connections
+	ConnectedAt    time.Time
+	State          State
+	ForwardedPort  uint16
+	ForwardedProto string // "TCP+UDP", "UDP", or "" when unmapped
+	LastError      error
 }
 
 // Connection manages the full VPN connection lifecycle.
@@ -141,7 +142,14 @@ func (c *Connection) OnLog(fn func(string)) {
 func (c *Connection) Info() ConnectionInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.info
+	info := c.info
+	// The port mapping is acquired in the background and can lapse, so
+	// read it live rather than trusting what was set at connect time.
+	if c.portFwd != nil {
+		info.ForwardedPort = c.portFwd.Port()
+		info.ForwardedProto = c.portFwd.Protocols()
+	}
+	return info
 }
 
 // State returns the current connection state.
@@ -453,10 +461,6 @@ func (c *Connection) doConnect(ctx context.Context, server *api.LogicalServer, k
 	}
 
 	// Success
-	var fwdPort uint16
-	if c.portFwd != nil {
-		fwdPort = c.portFwd.Port()
-	}
 	var entryCountry string
 	if server.IsSecureCore() {
 		entryCountry = server.EntryCountry
@@ -469,7 +473,6 @@ func (c *Connection) doConnect(ctx context.Context, server *api.LogicalServer, k
 		EntryCountry:  entryCountry,
 		ConnectedAt:   time.Now(),
 		State:         StateConnected,
-		ForwardedPort: fwdPort,
 	}
 	c.mu.Unlock()
 
@@ -1038,6 +1041,17 @@ func (c *Connection) ForwardedPort() uint16 {
 		return c.portFwd.Port()
 	}
 	return 0
+}
+
+// ForwardedProtocols returns which protocols the live mapping covers
+// ("TCP+UDP" or "UDP"), or "" when there is no mapping.
+func (c *Connection) ForwardedProtocols() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.portFwd != nil {
+		return c.portFwd.Protocols()
+	}
+	return ""
 }
 
 func (c *Connection) setState(state State) {

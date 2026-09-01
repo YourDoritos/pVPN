@@ -15,17 +15,18 @@ type tickMsg time.Time
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type StatusModel struct {
-	width, height int
-	state         string
-	serverName    string
-	country       string
-	entryCountry  string
-	connectedAt   time.Time
-	forwardedPort uint16
-	info          vpn.ConnectionInfo
-	stats         *vpn.PeerStats
-	err           error
-	spinnerIdx    int
+	width, height  int
+	state          string
+	serverName     string
+	country        string
+	entryCountry   string
+	connectedAt    time.Time
+	forwardedPort  uint16
+	forwardedProto string
+	info           vpn.ConnectionInfo
+	stats          *vpn.PeerStats
+	err            error
+	spinnerIdx     int
 }
 
 func NewStatusModel() StatusModel {
@@ -49,6 +50,7 @@ func (m *StatusModel) SetConnected(info vpn.ConnectionInfo) {
 	m.entryCountry = info.EntryCountry
 	m.connectedAt = info.ConnectedAt
 	m.forwardedPort = info.ForwardedPort
+	m.forwardedProto = info.ForwardedProto
 	m.err = nil
 }
 
@@ -58,6 +60,7 @@ func (m *StatusModel) SetDisconnected() {
 	m.state = "disconnected"
 	m.stats = nil
 	m.forwardedPort = 0
+	m.forwardedProto = ""
 	m.entryCountry = ""
 }
 
@@ -90,14 +93,16 @@ func (m *StatusModel) SetConnectedFromDaemon(data *ipc.StatusData) {
 	m.entryCountry = data.EntryCountry
 	m.connectedAt = time.Now().Add(-time.Duration(data.Duration) * time.Second)
 	m.forwardedPort = data.ForwardedPort
+	m.forwardedProto = data.ForwardedProto
 	m.info = vpn.ConnectionInfo{
-		ServerName:    data.Server,
-		ServerIP:      data.ServerIP,
-		ServerCountry: data.Country,
-		EntryCountry:  data.EntryCountry,
-		ConnectedAt:   m.connectedAt,
-		State:         vpn.StateConnected,
-		ForwardedPort: data.ForwardedPort,
+		ServerName:     data.Server,
+		ServerIP:       data.ServerIP,
+		ServerCountry:  data.Country,
+		EntryCountry:   data.EntryCountry,
+		ConnectedAt:    m.connectedAt,
+		State:          vpn.StateConnected,
+		ForwardedPort:  data.ForwardedPort,
+		ForwardedProto: data.ForwardedProto,
 	}
 	if data.RxBytes > 0 || data.TxBytes > 0 {
 		m.stats = &vpn.PeerStats{
@@ -288,7 +293,11 @@ func (m StatusModel) viewConnected() string {
 	}
 
 	if m.forwardedPort > 0 {
-		rows = append(rows, kvRow("Port Forward", fmt.Sprintf("%d (TCP+UDP)", m.forwardedPort)))
+		proto := m.forwardedProto
+		if proto == "" {
+			proto = "UDP"
+		}
+		rows = append(rows, kvRow("Port Forward", fmt.Sprintf("%d (%s)", m.forwardedPort, proto)))
 	}
 
 	if m.stats != nil {

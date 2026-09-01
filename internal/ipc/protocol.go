@@ -63,8 +63,12 @@ type StatusData struct {
 	TxBytes       int64  `json:"tx_bytes,omitempty"`
 	Handshake     int64  `json:"handshake_epoch,omitempty"`
 	ForwardedPort uint16 `json:"forwarded_port,omitempty"`
-	Username      string `json:"username,omitempty"`
-	PlanName      string `json:"plan_name,omitempty"`
+	// ForwardedProto is what the mapping actually covers ("TCP+UDP" or
+	// "UDP"). Empty when there is no live mapping. The UI must not claim
+	// a protocol the gateway did not grant.
+	ForwardedProto string `json:"forwarded_proto,omitempty"`
+	Username       string `json:"username,omitempty"`
+	PlanName       string `json:"plan_name,omitempty"`
 }
 
 type ServerEntry struct {
