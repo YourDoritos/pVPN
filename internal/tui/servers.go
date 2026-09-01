@@ -85,6 +85,12 @@ func NewServersModel(vpnInfo *api.VPNInfoResponse) ServersModel {
 	}
 }
 
+// InputFocused reports whether the server search box has focus. While it
+// does, the global 1/2/3 tab shortcuts in app.go must not consume key
+// presses, or a digit typed into a server name (DE#3, US-NY#12) switches
+// tab instead. Same bug as issue #3, same fix.
+func (m ServersModel) InputFocused() bool { return m.searching }
+
 func (m *ServersModel) SetSize(w, h int) {
 	m.width = w
 	m.height = h

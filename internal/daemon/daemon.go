@@ -365,8 +365,11 @@ func (d *Daemon) cmdStatus() *ipc.Response {
 				data.TxBytes = stats.TxBytes
 				data.Handshake = stats.LastHandshake.Unix()
 			}
-			data.ForwardedPort = conn.ForwardedPort()
-			data.ForwardedProto = conn.ForwardedProtocols()
+			// info was taken from conn.Info() above and already carries
+			// both fields live; re-fetching would take the lock twice
+			// more and could tear across a mapping lapsing.
+			data.ForwardedPort = info.ForwardedPort
+			data.ForwardedProto = info.ForwardedProto
 		}
 		d.mu.RLock()
 		data.Protocol = d.conn.Protocol()

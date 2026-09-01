@@ -6,8 +6,11 @@ package network
 // ENOENT, which propagated up through SetDNS and aborted the connect.
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -66,16 +69,27 @@ func TestWriteFileAtomic_OverwritesExisting(t *testing.T) {
 
 func TestWriteFileAtomic_UnwritableParent(t *testing.T) {
 	if os.Geteuid() == 0 {
-		t.Skip("root ignores directory permissions")
+		// Root bypasses directory permissions, so simulate the real
+		// failure mode instead: a parent path component that is a file.
+		base := t.TempDir()
+		blocker := filepath.Join(base, "NetworkManager")
+		if err := os.WriteFile(blocker, []byte("not a directory\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		err := writeFileAtomic(filepath.Join(blocker, "conf.d", "pvpn-dns.conf"), []byte("x"), 0644)
+		if !errors.Is(err, syscall.ENOTDIR) {
+			t.Errorf("error = %v, want ENOTDIR", err)
+		}
+		return
 	}
+
 	base := t.TempDir()
 	locked := filepath.Join(base, "locked")
 	if err := os.Mkdir(locked, 0500); err != nil {
 		t.Fatal(err)
 	}
 	err := writeFileAtomic(filepath.Join(locked, "sub", "pvpn-dns.conf"), []byte("x"), 0644)
-	if err == nil {
-		t.Fatal("expected an error when the parent cannot be created")
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("error = %v, want a permission error", err)
 	}
-	t.Logf("reported: %v", err)
 }

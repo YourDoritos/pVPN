@@ -182,6 +182,11 @@ func (m StatusModel) UpdateDaemon(msg tea.Msg, dc *ipc.Client) (StatusModel, tea
 	case daemonStatsMsg:
 		if msg.stats != nil {
 			m.SetDaemonStats(msg.stats.RxBytes, msg.stats.TxBytes, msg.stats.Handshake)
+			// The port mapping is acquired in the background and can lapse
+			// mid-session, so it has to be refreshed on every poll rather
+			// than sampled once at connect time.
+			m.forwardedPort = msg.stats.ForwardedPort
+			m.forwardedProto = msg.stats.ForwardedProto
 		}
 		return m, TickCmd()
 	case tickMsg:
@@ -230,6 +235,11 @@ func (m StatusModel) Update(msg tea.Msg, conn *vpn.Connection) (StatusModel, tea
 			if stats, err := conn.Stats(); err == nil {
 				m.stats = stats
 			}
+			// Same reason as the daemon path above: the mapping arrives
+			// after connect and can lapse, so re-read it every tick.
+			info := conn.Info()
+			m.forwardedPort = info.ForwardedPort
+			m.forwardedProto = info.ForwardedProto
 			return m, TickCmd()
 		}
 		if m.state == "connecting" || m.state == "reconnecting" {
@@ -293,11 +303,11 @@ func (m StatusModel) viewConnected() string {
 	}
 
 	if m.forwardedPort > 0 {
-		proto := m.forwardedProto
-		if proto == "" {
-			proto = "UDP"
+		value := fmt.Sprintf("%d", m.forwardedPort)
+		if m.forwardedProto != "" {
+			value += " (" + m.forwardedProto + ")"
 		}
-		rows = append(rows, kvRow("Port Forward", fmt.Sprintf("%d (%s)", m.forwardedPort, proto)))
+		rows = append(rows, kvRow("Port Forward", value))
 	}
 
 	if m.stats != nil {

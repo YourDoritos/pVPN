@@ -10,9 +10,17 @@ package vpn
 // gated twice: it needs root AND an explicit opt-in, because running it
 // in the host's namespace would install live ip rules on the machine.
 //
+// The namespace has no internet, so build the test binary OUTSIDE it:
+//
+//	go test -c -o /tmp/vpn.test ./internal/vpn/
 //	sudo ip netns add pvpntest
-//	sudo ip netns exec pvpntest env PVPN_NETNS_TEST=1 go test -run NetNS ./internal/vpn/
+//	sudo ip netns exec pvpntest env PVPN_NETNS_TEST=1 /tmp/vpn.test -test.run NetNS
 //	sudo ip netns del pvpntest
+//
+// The test builds its own uplink and default route: the whole point of a
+// throw route is to fall through to the main table, so without a default
+// there the lookup returns ENETUNREACH and the test fails for the wrong
+// reason.
 
 import (
 	"net"
@@ -31,6 +39,35 @@ func TestNetNS_ThrowRouteForServerEndpoint(t *testing.T) {
 		t.Skip("needs root")
 	}
 
+	// Uplink standing in for the physical NIC, plus the default route the
+	// throw route needs to fall through to.
+	upAttrs := netlink.NewLinkAttrs()
+	upAttrs.Name = "pvuplink"
+	if err := netlink.LinkAdd(&netlink.Dummy{LinkAttrs: upAttrs}); err != nil {
+		t.Fatalf("create uplink: %v", err)
+	}
+	uplink, err := netlink.LinkByName("pvuplink")
+	if err != nil {
+		t.Fatalf("lookup uplink: %v", err)
+	}
+	t.Cleanup(func() { netlink.LinkDel(uplink) })
+	upAddr, err := netlink.ParseAddr("192.168.1.50/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.AddrAdd(uplink, upAddr); err != nil {
+		t.Fatalf("uplink addr: %v", err)
+	}
+	if err := netlink.LinkSetUp(uplink); err != nil {
+		t.Fatalf("uplink up: %v", err)
+	}
+	if err := netlink.RouteAdd(&netlink.Route{
+		LinkIndex: uplink.Attrs().Index,
+		Gw:        net.ParseIP("192.168.1.1"),
+	}); err != nil {
+		t.Fatalf("default route: %v", err)
+	}
+
 	la := netlink.NewLinkAttrs()
 	la.Name = "pvpn0"
 	if err := netlink.LinkAdd(&netlink.Dummy{LinkAttrs: la}); err != nil {
@@ -40,6 +77,8 @@ func TestNetNS_ThrowRouteForServerEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup pvpn0: %v", err)
 	}
+	// Without this the test cannot be run twice in the same namespace.
+	t.Cleanup(func() { netlink.LinkDel(link) })
 	addr, err := netlink.ParseAddr("10.2.0.2/32")
 	if err != nil {
 		t.Fatal(err)

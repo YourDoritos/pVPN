@@ -41,6 +41,10 @@ type SettingsModel struct {
 	// DNS text input
 	dnsEditing bool
 	dnsInput   string
+
+	// saveErr holds the last failed write to the config file, so the view
+	// can report it instead of showing "Settings saved!" regardless.
+	saveErr error
 	// Account info (populated from daemon)
 	username string
 	planName string
@@ -78,12 +82,20 @@ func (m SettingsModel) Update(msg tea.Msg, cfg *config.Config, dc *ipc.Client) (
 		case "left":
 			m.adjustSetting(cfg, -1)
 			m.saved = false
+			m.saveErr = nil
 		case "right":
 			m.adjustSetting(cfg, 1)
 			m.saved = false
+			m.saveErr = nil
 		case "s":
 			if cfg != nil {
-				cfg.Save()
+				if err := cfg.Save(); err != nil {
+					m.saveErr = err
+					m.saved = false
+					m.saveErr = nil
+					return m, nil
+				}
+				m.saveErr = nil
 				m.saved = true
 				// Notify daemon so live settings (kill switch) take effect immediately
 				if dc != nil {
@@ -128,6 +140,7 @@ func (m SettingsModel) handleAction(cfg *config.Config, dc *ipc.Client) (Setting
 			// Switch back to Proton
 			cfg.DNS.CustomDNS = nil
 			m.saved = false
+			m.saveErr = nil
 		} else {
 			// Enter DNS editing mode
 			m.dnsEditing = true
@@ -159,6 +172,7 @@ func (m SettingsModel) handleDNSInput(msg tea.KeyMsg, cfg *config.Config) (Setti
 			if len(servers) > 0 {
 				cfg.DNS.CustomDNS = servers
 				m.saved = false
+				m.saveErr = nil
 			}
 		}
 		m.dnsEditing = false
@@ -263,6 +277,7 @@ func (m *SettingsModel) adjustSetting(cfg *config.Config, dir int) {
 			if len(cfg.DNS.CustomDNS) > 0 {
 				cfg.DNS.CustomDNS = nil
 				m.saved = false
+				m.saveErr = nil
 			} else {
 				m.dnsEditing = true
 				m.dnsInput = ""
@@ -297,13 +312,16 @@ func (m SettingsModel) ViewWithConfig(cfg *config.Config) string {
 	}
 
 	var statusLine string
-	if m.saved {
+	switch {
+	case m.saveErr != nil:
+		statusLine = StyleError.Render("Could not save: " + m.saveErr.Error())
+	case m.saved:
 		statusLine = StyleSuccess.Render("Settings saved!")
 	}
 
 	helpText := "j/k: navigate  enter/space: toggle  left/right: adjust  s: save"
 	if m.dnsEditing {
-		helpText = "Type DNS IPs (comma/space separated)  enter: confirm  esc: cancel"
+		helpText = "Type DNS IPs (comma/space separated)  enter: confirm  esc: cancel  (then s: save)"
 	}
 	help := StyleHelp.Render(helpText)
 

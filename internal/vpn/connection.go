@@ -384,6 +384,7 @@ func (c *Connection) doConnect(ctx context.Context, server *api.LogicalServer, k
 
 	// Step 2: Set up fwmark-based policy routing
 	routes := NewRouteManager(tunnelLink, serverIP)
+	routes.SetOnLog(c.onLog)
 	if err := routes.Up(); err != nil {
 		return fmt.Errorf("setup routes: %w", err)
 	}
@@ -464,7 +465,12 @@ func (c *Connection) doConnect(ctx context.Context, server *api.LogicalServer, k
 
 	// Step 6: Start port forwarding if enabled (must be after full tunnel config)
 	if certFeatures.PortForwarding {
-		pf := NewPortForwarder(ctx, c.onLog)
+		// The forwarder lives as long as the connection, not as long as
+		// the connect call; teardown ends it via Stop().
+		c.mu.RLock()
+		onLog := c.onLog
+		c.mu.RUnlock()
+		pf := NewPortForwarder(onLog)
 		c.mu.Lock()
 		c.portFwd = pf
 		c.mu.Unlock()

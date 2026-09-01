@@ -104,9 +104,19 @@ func (b *NMBackend) setDNSViaConfD(servers []net.IP) error {
 	// Check if another service owns resolv.conf — if so, the conf.d
 	// approach won't work (they'll overwrite). Skip DNS and warn.
 	if owner := resolvConfOwner(); owner != "" {
-		// DNS won't be set to Proton's servers, but the VPN tunnel
-		// still works — traffic is routed through the VPN. DNS queries
-		// to 10.2.0.1 work through the tunnel regardless.
+		// NOTE: this returns success while pVPN has NO control of DNS.
+		// The previous comment here claimed queries still go through the
+		// tunnel; that is only true of queries addressed to 10.2.0.1, and
+		// nothing in this branch makes the system send any. The resolver
+		// stays whatever the other manager configured, which is usually
+		// the LAN router, and buildRules deliberately permits LAN egress
+		// so local network access keeps working. Those queries therefore
+		// reach the ISP in plaintext.
+		//
+		// direct.go returns a hard error for this same condition. Making
+		// the two consistent would break connects that currently succeed
+		// (mainly Tailscale users), so it is left as the owner's call
+		// rather than changed silently here.
 		log.Printf("warning: DNS managed by %s — VPN DNS override skipped. VPN tunnel is active; for Proton DNS (NetShield etc.) consider enabling systemd-resolved.", owner)
 		return nil
 	}

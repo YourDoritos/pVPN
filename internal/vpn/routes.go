@@ -24,9 +24,16 @@ import (
 //	-> main table -> real gateway -> VPN server
 type RouteManager struct {
 	link     netlink.Link
-	serverIP net.IP // WireGuard server endpoint IP (for the input-delivery exception below)
+	serverIP net.IP // WireGuard server endpoint IP (for the F-17 exception below)
 	rules    []*netlink.Rule
+
+	// OnLog, when set, forwards operator-visible problems to the UI. Set
+	// it directly after construction, as the stealth manager does.
+	onLog func(string)
 }
+
+// SetOnLog routes user-visible route problems to the given sink.
+func (rm *RouteManager) SetOnLog(f func(string)) { rm.onLog = f }
 
 // NewRouteManager creates a route manager for the given VPN interface.
 // serverIP is the VPN server's endpoint IP; it is exempted from the
@@ -159,10 +166,16 @@ func (rm *RouteManager) Up() error {
 	// abort so the next rule (main) answers, putting the reverse path
 	// back on the physical NIC. Verified in netns: src_valid_mark=1
 	// and `suppress_prefixlength 0` both still drop the reply; only
-	// this works. Scoped to a single /32 in the VPN table, so the
-	// F-13 TunnelVision mitigation is untouched — a rogue route
-	// injected into main still cannot pull any other destination off
-	// the tunnel.
+	// this works.
+	//
+	// The F-13 TunnelVision mitigation is NARROWED, not untouched: this
+	// deliberately pulls one /32 off the tunnel, so unmarked host traffic
+	// addressed to the entry IP now goes out the physical NIC in the
+	// clear. That is the minimum-width exception that can work, it is
+	// already permitted by the kill switch (see `ip daddr %s accept` in
+	// buildRules), and it is confirmed by test that every other
+	// destination stays on pvpn0 even against /1 split-defaults injected
+	// into main.
 	if rm.serverIP != nil {
 		if v4 := rm.serverIP.To4(); v4 != nil {
 			throwRoute := &netlink.Route{
@@ -171,11 +184,17 @@ func (rm *RouteManager) Up() error {
 				Type:  unix.RTN_THROW,
 			}
 			if err := netlink.RouteAdd(throwRoute); err != nil {
-				// Non-fatal, but on a host with strict rp_filter the
-				// tunnel cannot complete a handshake without it. Log
-				// loudly so this is traceable instead of becoming
-				// another silent Local Agent timeout.
-				log.Printf("routes: server throw route add failed: %v (F-17: handshake will stall if rp_filter is strict)", err)
+				// Non-fatal: on a host with loose or disabled rp_filter
+				// the tunnel works fine without this, so failing the
+				// connect would be worse. But on a strict host the
+				// handshake will now stall, and the whole point of F-17
+				// is to stop that being invisible, so this has to reach
+				// the user's log and not just the daemon's.
+				msg := fmt.Sprintf("routes: server throw route add failed: %v (F-17: handshake will stall if rp_filter is strict)", err)
+				log.Print(msg)
+				if rm.onLog != nil {
+					rm.onLog(msg)
+				}
 			}
 		}
 	}

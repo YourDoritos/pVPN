@@ -97,6 +97,8 @@ func (a App) inputFocused() bool {
 		return a.login.InputFocused()
 	case ViewSettings:
 		return a.settings.InputFocused()
+	case ViewServers:
+		return a.servers.InputFocused()
 	}
 	return false
 }
