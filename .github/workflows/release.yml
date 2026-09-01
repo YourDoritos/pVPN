@@ -85,6 +85,16 @@ jobs:
           sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD
           sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
 
+          # Derive makedepends from the PKGBUILD rather than hand-copying it.
+          # AUR helpers resolve dependencies from .SRCINFO, so a stale value
+          # here tells a user their toolchain is new enough and then fails
+          # the build. This drifted once already (go>=1.22 vs go>=1.26).
+          MAKEDEPENDS=$(sed -n "s/^makedepends=(\(.*\))/\1/p" PKGBUILD | tr -d "'\"")
+          MAKEDEPENDS_LINES=""
+          for dep in ${MAKEDEPENDS}; do
+            MAKEDEPENDS_LINES="${MAKEDEPENDS_LINES}\tmakedepends = ${dep}\n"
+          done
+
           # Regenerate .SRCINFO from scratch. We avoid `makepkg --printsrcinfo`
           # (which would require installing base-devel in CI) by hand-writing
           # the file — the schema is stable and matches what makepkg emits.
@@ -98,8 +108,7 @@ jobs:
           	arch = x86_64
           	arch = aarch64
           	license = GPL-3.0-or-later
-          	makedepends = go>=1.22
-          	makedepends = git
+          $(printf "${MAKEDEPENDS_LINES}")
           	depends = glibc
           	source = pvpn-go-${VERSION}.tar.gz::https://github.com/YourDoritos/pVPN/archive/v${VERSION}.tar.gz
           	sha256sums = SKIP
