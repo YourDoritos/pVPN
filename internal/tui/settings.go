@@ -50,6 +50,11 @@ func NewSettingsModel() SettingsModel { return SettingsModel{} }
 
 func (m *SettingsModel) SetSize(w, h int) { m.width = w; m.height = h }
 
+// InputFocused reports whether a text field inside Settings currently has
+// focus. While it does, the global 1/2/3 tab shortcuts in app.go must not
+// consume key presses (issue #3).
+func (m SettingsModel) InputFocused() bool { return m.dnsEditing }
+
 func (m *SettingsModel) SetAccountInfo(username, planName string) {
 	m.username = username
 	m.planName = planName

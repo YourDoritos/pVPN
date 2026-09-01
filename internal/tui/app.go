@@ -87,6 +87,20 @@ func (a App) contentHeight() int {
 	return a.height - navHeight
 }
 
+// inputFocused reports whether the visible view has a text field holding
+// focus. Global single-key shortcuts (the 1/2/3 tab switches) must yield
+// to it, or digits typed into a field are swallowed as navigation --
+// which is exactly what issue #3 reported for the custom DNS field.
+func (a App) inputFocused() bool {
+	switch a.view {
+	case ViewLogin:
+		return a.login.InputFocused()
+	case ViewSettings:
+		return a.settings.InputFocused()
+	}
+	return false
+}
+
 // IsDaemonMode returns true if the TUI is connected to the daemon via IPC.
 func (a App) IsDaemonMode() bool {
 	return a.daemonMode
@@ -193,7 +207,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Global tab navigation
-		if a.authenticated && (a.view != ViewLogin || !a.login.InputFocused()) {
+		if a.authenticated && !a.inputFocused() {
 			switch msg.String() {
 			case "1":
 				a.view = ViewStatus
