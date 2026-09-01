@@ -375,7 +375,7 @@ func (c *Connection) doConnect(ctx context.Context, server *api.LogicalServer, k
 	}
 
 	// Step 2: Set up fwmark-based policy routing
-	routes := NewRouteManager(tunnelLink)
+	routes := NewRouteManager(tunnelLink, serverIP)
 	if err := routes.Up(); err != nil {
 		return fmt.Errorf("setup routes: %w", err)
 	}

@@ -23,13 +23,17 @@ import (
 //
 //	-> main table -> real gateway -> VPN server
 type RouteManager struct {
-	link  netlink.Link
-	rules []*netlink.Rule
+	link     netlink.Link
+	serverIP net.IP // WireGuard server endpoint IP (for the input-delivery exception below)
+	rules    []*netlink.Rule
 }
 
 // NewRouteManager creates a route manager for the given VPN interface.
-func NewRouteManager(link netlink.Link) *RouteManager {
-	return &RouteManager{link: link}
+// serverIP is the VPN server's endpoint IP; it is exempted from the
+// VPN policy table so the inbound WireGuard handshake reply is delivered
+// to the local socket instead of being steered into the tunnel.
+func NewRouteManager(link netlink.Link, serverIP net.IP) *RouteManager {
+	return &RouteManager{link: link, serverIP: serverIP}
 }
 
 // Up sets up fwmark-based policy routing.
@@ -124,6 +128,56 @@ func (rm *RouteManager) Up() error {
 	if err := netlink.RouteAdd(vpnRoute); err != nil {
 		rm.Down()
 		return fmt.Errorf("add VPN default route: %w", err)
+	}
+
+	// F-17: throw route for the VPN server endpoint.
+	//
+	// Without this, a connect can complete every step and still never
+	// hand shake, surfacing only as an opaque 15s Local Agent timeout
+	// with rx stuck at 0.
+	//
+	// The kernel WireGuard module marks its outgoing encapsulated
+	// packets, so they skip rule 9999 and reach the server via main.
+	// The server's reply arrives unmarked. Delivery to the local
+	// socket is fine on its own — the `local` table sits at rule
+	// priority 0, ahead of 9999 — but strict reverse-path filtering
+	// is not. fib_validate_source() resolves the packet's SOURCE (the
+	// server IP) with mark 0, which matches rule 9999, lands in the
+	// VPN table, and hits `default dev pvpn0`. That is not the
+	// interface the packet arrived on, so the kernel drops it.
+	//
+	// We cause this ourselves: sysctlHardener sets
+	// net.ipv4.conf.all.rp_filter=1 at connect time (see sysctl.go).
+	// The kernel takes max(conf.all, conf.<dev>), and the values are
+	// NOT ordered by strictness — 0 is off, 1 is strict, 2 is loose.
+	// So max(1,2)=2 stays permissive and hides the bug on distros
+	// that default interfaces to 2 (Arch, via systemd's
+	// 50-default.conf), while max(1,0)=1 turns a previously working
+	// machine strict and breaks it.
+	//
+	// A `throw` route makes the VPN-table lookup for the server IP
+	// abort so the next rule (main) answers, putting the reverse path
+	// back on the physical NIC. Verified in netns: src_valid_mark=1
+	// and `suppress_prefixlength 0` both still drop the reply; only
+	// this works. Scoped to a single /32 in the VPN table, so the
+	// F-13 TunnelVision mitigation is untouched — a rogue route
+	// injected into main still cannot pull any other destination off
+	// the tunnel.
+	if rm.serverIP != nil {
+		if v4 := rm.serverIP.To4(); v4 != nil {
+			throwRoute := &netlink.Route{
+				Dst:   &net.IPNet{IP: v4, Mask: net.CIDRMask(32, 32)},
+				Table: RouteTable,
+				Type:  unix.RTN_THROW,
+			}
+			if err := netlink.RouteAdd(throwRoute); err != nil {
+				// Non-fatal, but on a host with strict rp_filter the
+				// tunnel cannot complete a handshake without it. Log
+				// loudly so this is traceable instead of becoming
+				// another silent Local Agent timeout.
+				log.Printf("routes: server throw route add failed: %v (F-17: handshake will stall if rp_filter is strict)", err)
+			}
+		}
 	}
 
 	// F-16a backstop: install an `unreachable default` in the VPN
