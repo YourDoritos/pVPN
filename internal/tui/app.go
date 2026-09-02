@@ -236,6 +236,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if a.daemonMode && a.daemonClient != nil {
 					return a, a.fetchAccountInfo()
 				}
+				// Standalone: there is no daemon to ask, but the TUI owns
+				// the API client here and already holds everything the row
+				// needs. Without this the account row reads "not logged
+				// in" for the whole session even when signed in (issue #1).
+				a.settings.SetAccountInfo(a.accountInfo())
 				return a, nil
 			}
 		}
@@ -664,6 +669,20 @@ type accountInfoMsg struct {
 }
 
 type daemonStatusMsg struct{ data *ipc.StatusData }
+
+// accountInfo returns the signed-in login and plan title from local
+// state. In daemon mode the same values arrive over IPC; in standalone
+// the TUI holds them already, so nothing has to be fetched. LoginEmail
+// is persisted in the session file, so it survives a restart.
+func (a App) accountInfo() (username, planName string) {
+	if a.client != nil {
+		username = a.client.LoginEmail()
+	}
+	if a.vpnInfo != nil {
+		planName = a.vpnInfo.VPN.PlanTitle
+	}
+	return username, planName
+}
 
 func (a App) fetchAccountInfo() tea.Cmd {
 	dc := a.daemonClient
