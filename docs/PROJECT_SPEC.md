@@ -347,7 +347,7 @@ pVPN/
 |   |   +-- status.go            # Connection status dashboard
 |   |   +-- settings.go          # Settings/preferences
 |   |   +-- messages.go          # TUI message types
-|   |   +-- theme.go             # Colors, styles (Proton brand colors)
+|   |   +-- theme.go             # Colors, styles (purple/teal accent palette)
 |   +-- config/
 |       +-- config.go            # TOML config file management
 |       +-- paths.go             # XDG paths (~/.config/pvpn, ~/.local/share/pvpn)

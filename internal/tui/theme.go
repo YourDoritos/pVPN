@@ -2,7 +2,7 @@ package tui
 
 import "github.com/charmbracelet/lipgloss"
 
-// Proton brand colors
+// Purple and teal accent palette used across the TUI.
 var (
 	ColorPrimary   = lipgloss.Color("#6D4AFF") // Proton purple
 	ColorSecondary = lipgloss.Color("#8B6FFF")

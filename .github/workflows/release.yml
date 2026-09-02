@@ -95,6 +95,13 @@ jobs:
             MAKEDEPENDS_LINES="${MAKEDEPENDS_LINES}\tmakedepends = ${dep}\n"
           done
 
+          # optdepends entries contain spaces ("pkg: why you want it"), so
+          # they have to be split on the quotes rather than on whitespace.
+          OPTDEPENDS_LINES=""
+          while IFS= read -r dep; do
+            [ -n "${dep}" ] && OPTDEPENDS_LINES="${OPTDEPENDS_LINES}\toptdepends = ${dep}\n"
+          done < <(sed -n "s/^optdepends=(\(.*\))/\1/p" PKGBUILD | grep -oP "(?<=')[^']+(?=')")
+
           # Regenerate .SRCINFO from scratch. We avoid `makepkg --printsrcinfo`
           # (which would require installing base-devel in CI) by hand-writing
           # the file — the schema is stable and matches what makepkg emits.
@@ -110,6 +117,7 @@ jobs:
           	license = GPL-3.0-or-later
           $(printf "${MAKEDEPENDS_LINES}")
           	depends = glibc
+          $(printf "${OPTDEPENDS_LINES}")
           	source = pvpn-go-${VERSION}.tar.gz::https://github.com/YourDoritos/pVPN/archive/v${VERSION}.tar.gz
           	sha256sums = SKIP
 

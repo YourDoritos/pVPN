@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/YourDoritos/pvpn/internal/config"
@@ -41,6 +42,7 @@ type SettingsModel struct {
 	// DNS text input
 	dnsEditing bool
 	dnsInput   string
+	dnsErr     string
 
 	// saveErr holds the last failed write to the config file, so the view
 	// can report it instead of showing "Settings saved!" regardless.
@@ -136,16 +138,13 @@ func (m SettingsModel) handleAction(cfg *config.Config, dc *ipc.Client) (Setting
 		if cfg == nil {
 			return m, nil
 		}
-		if len(cfg.DNS.CustomDNS) > 0 {
-			// Switch back to Proton
-			cfg.DNS.CustomDNS = nil
-			m.saved = false
-			m.saveErr = nil
-		} else {
-			// Enter DNS editing mode
-			m.dnsEditing = true
-			m.dnsInput = ""
-		}
+		// Open the editor pre-filled with whatever is configured. It used
+		// to clear a custom entry straight back to Proton, so correcting
+		// a typo meant wiping the value and retyping it from scratch.
+		// Clearing the field and confirming is how you go back to Proton.
+		m.dnsEditing = true
+		m.dnsInput = strings.Join(cfg.DNS.CustomDNS, " ")
+		m.dnsErr = ""
 		return m, nil
 	case "logout":
 		if dc != nil {
@@ -165,16 +164,28 @@ func (m SettingsModel) handleAction(cfg *config.Config, dc *ipc.Client) (Setting
 func (m SettingsModel) handleDNSInput(msg tea.KeyMsg, cfg *config.Config) (SettingsModel, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
-		// Parse and save DNS servers
 		input := strings.TrimSpace(m.dnsInput)
+		if input == "" && cfg != nil {
+			// Emptying the field is how the user returns to Proton DNS.
+			cfg.DNS.CustomDNS = nil
+			m.saved = false
+			m.saveErr = nil
+		}
 		if input != "" && cfg != nil {
-			servers := parseDNSInput(input)
+			servers, invalid := parseDNSInput(input)
+			if len(invalid) > 0 {
+				// Stay in the field so the address can be corrected
+				// rather than losing it and leaving DNS half applied.
+				m.dnsErr = fmt.Sprintf("not a valid IP address: %s", strings.Join(invalid, ", "))
+				return m, nil
+			}
 			if len(servers) > 0 {
 				cfg.DNS.CustomDNS = servers
 				m.saved = false
 				m.saveErr = nil
 			}
 		}
+		m.dnsErr = ""
 		m.dnsEditing = false
 		m.dnsInput = ""
 	case "esc", "escape":
@@ -193,18 +204,23 @@ func (m SettingsModel) handleDNSInput(msg tea.KeyMsg, cfg *config.Config) (Setti
 	return m, nil
 }
 
-func parseDNSInput(input string) []string {
-	// Accept comma or space separated IPs
+// parseDNSInput splits comma or space separated resolver addresses and
+// returns the valid ones plus whatever failed to parse. Anything accepted
+// here is handed straight to the resolver config, so an unvalidated typo
+// produced a tunnel with silently broken DNS and no feedback.
+func parseDNSInput(input string) (servers []string, invalid []string) {
 	input = strings.ReplaceAll(input, ",", " ")
-	parts := strings.Fields(input)
-	var servers []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			servers = append(servers, p)
+	for _, p := range strings.Fields(input) {
+		if p == "" {
+			continue
 		}
+		if net.ParseIP(p) == nil {
+			invalid = append(invalid, p)
+			continue
+		}
+		servers = append(servers, p)
 	}
-	return servers
+	return servers, invalid
 }
 
 func (m *SettingsModel) toggleSetting(cfg *config.Config) {
@@ -313,6 +329,8 @@ func (m SettingsModel) ViewWithConfig(cfg *config.Config) string {
 
 	var statusLine string
 	switch {
+	case m.dnsErr != "":
+		statusLine = StyleError.Render(m.dnsErr)
 	case m.saveErr != nil:
 		statusLine = StyleError.Render("Could not save: " + m.saveErr.Error())
 	case m.saved:
@@ -321,7 +339,7 @@ func (m SettingsModel) ViewWithConfig(cfg *config.Config) string {
 
 	helpText := "j/k: navigate  enter/space: toggle  left/right: adjust  s: save"
 	if m.dnsEditing {
-		helpText = "Type DNS IPs (comma/space separated)  enter: confirm  esc: cancel  (then s: save)"
+		helpText = "DNS IPs (comma/space separated)  empty = Proton  enter: confirm  esc: cancel  (then s: save)"
 	}
 	help := StyleHelp.Render(helpText)
 

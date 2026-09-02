@@ -128,6 +128,11 @@ pvpn
 If `pvpn` exits with `permission denied` on `/etc/pvpn/config.toml`, the
 group change has not taken effect in that shell yet.
 
+> [!NOTE]
+> The server list shows country flags as emoji. If they render as blank
+> boxes, your terminal font has no flag coverage: install `noto-fonts-emoji`
+> (or your distro's equivalent).
+
 ### NUR (Nix/NixOS)
 
 First follow the setup instruction for the NUR [here](https://nur.nix-community.org/documentation/).
