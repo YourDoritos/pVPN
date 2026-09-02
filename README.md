@@ -117,7 +117,16 @@ yay -S pvpn-go
 ```
 
 The daemon is enabled automatically and the `pvpn` group is created.
-Add yourself to the group with `sudo usermod -aG pvpn $USER`, then run `pvpn`.
+
+```bash
+sudo usermod -aG pvpn $USER
+# group changes do not apply to shells that are already open:
+# open a new shell, or run: newgrp pvpn
+pvpn
+```
+
+If `pvpn` exits with `permission denied` on `/etc/pvpn/config.toml`, the
+group change has not taken effect in that shell yet.
 
 ### NUR (Nix/NixOS)
 

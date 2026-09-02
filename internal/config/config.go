@@ -94,6 +94,19 @@ func Load() (*Config, error) {
 	if os.IsNotExist(err) {
 		return cfg, nil
 	}
+	if os.IsPermission(err) {
+		// The config lives at /etc/pvpn/config.toml, mode 0660 root:pvpn.
+		// A bare "permission denied" here sends people chasing their
+		// package manager (see issue #4) when the real cause is almost
+		// always that `usermod -aG pvpn` has not taken effect in the
+		// current login session yet.
+		return nil, fmt.Errorf("cannot read %s: %w\n"+
+			"This file is readable by the %q group. If you have just run\n"+
+			"  sudo usermod -aG %s $USER\n"+
+			"the change does not apply to shells that were already open. "+
+			"Open a new shell, or run: newgrp %s",
+			path, err, SocketGroup, SocketGroup, SocketGroup)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
