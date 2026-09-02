@@ -14,6 +14,26 @@ import (
 const (
 	natPMPGateway = "10.2.0.1"
 
+	// natPMPInternalPort is the internal port we ask the gateway to map.
+	//
+	// It must stay 0, and that is load bearing. Measured against a real
+	// Proton P2P server (DE#772):
+	//
+	//   internal=0 -> gateway returns internal=37861 external=37861
+	//   internal=1 -> gateway returns internal=1     external=39269
+	//
+	// Proton reads 0 as "assign a port and map it to the SAME port on my
+	// side", which is the only arrangement that is any use: the user
+	// listens on the port we report and peers reach it. Asking for
+	// internal port 1, which is what Proton's own documentation tells you
+	// to do (`natpmpc -a 1 0 udp 60`), produces a mapping that forwards
+	// to local port 1 instead. The gateway still reports success, an
+	// external port is still returned, and an application listening on
+	// that port receives nothing. Verified end to end with an external
+	// prober: with 0 the inbound connection arrives, with 1 it arrives on
+	// port 1 and never reaches the advertised port.
+	natPMPInternalPort = 0
+
 	// natPMPLifetime is what we ask the gateway to hold the mapping for,
 	// and natPMPRenewEvery how often we refresh it. Renewing well inside
 	// the lifetime leaves room for a lost datagram or two without the
@@ -164,7 +184,7 @@ func (pf *PortForwarder) mapBoth() (port uint16, bothProtocols bool, err error) 
 		return 0, false, errStopped
 	}
 
-	udp, err := pf.client.AddPortMapping("udp", 0, 0, natPMPLifetime)
+	udp, err := pf.client.AddPortMapping("udp", natPMPInternalPort, 0, natPMPLifetime)
 	if err != nil {
 		return 0, false, err
 	}
@@ -185,7 +205,7 @@ func (pf *PortForwarder) mapBoth() (port uint16, bothProtocols bool, err error) 
 	// external port would be new request semantics that some NAT-PMP
 	// implementations reject outright, which would downgrade the report
 	// to UDP-only on servers where this used to work.
-	tcp, terr := pf.client.AddPortMapping("tcp", int(udp.InternalPort), 0, natPMPLifetime)
+	tcp, terr := pf.client.AddPortMapping("tcp", natPMPInternalPort, 0, natPMPLifetime)
 	if terr != nil {
 		return port, false, nil
 	}

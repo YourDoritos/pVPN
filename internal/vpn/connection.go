@@ -465,6 +465,19 @@ func (c *Connection) doConnect(ctx context.Context, server *api.LogicalServer, k
 
 	// Step 6: Start port forwarding if enabled (must be after full tunnel config)
 	if certFeatures.PortForwarding {
+		// Proton documents two hard preconditions, and silently grants
+		// nothing when either is unmet: port forwarding needs a P2P
+		// server, and cannot be combined with moderate (Type 2) NAT.
+		// Without these warnings the user just sees no port and no
+		// reason, which is most of what issue #7 turned out to be.
+		if !certFeatures.RandomNAT {
+			c.log("Port forwarding will not work while Moderate NAT is on. " +
+				"Proton does not allow both at once. Turn Moderate NAT off in Settings.")
+		}
+		if server != nil && !server.IsP2P() {
+			c.log("Port forwarding only works on P2P servers, and %s is not one. "+
+				"Pick a server marked P2P.", server.Name)
+		}
 		// The forwarder lives as long as the connection, not as long as
 		// the connect call; teardown ends it via Stop().
 		c.mu.RLock()
@@ -1047,6 +1060,16 @@ func (c *Connection) teardown(keepKillSwitch ...bool) error {
 	}
 
 	return firstErr
+}
+
+// log forwards an operator-visible message to the UI, if one is attached.
+func (c *Connection) log(format string, args ...any) {
+	c.mu.RLock()
+	onLog := c.onLog
+	c.mu.RUnlock()
+	if onLog != nil {
+		onLog(fmt.Sprintf(format, args...))
+	}
 }
 
 // ForwardedPort returns the currently assigned external port (0 if none).
