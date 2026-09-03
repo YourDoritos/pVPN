@@ -45,6 +45,14 @@ func SessionFile() string {
 	return filepath.Join(DataDir(), "session.enc")
 }
 
+// ServerCacheFile returns the path to the cached Proton server list.
+// The list is ~18k entries and several MB; caching it means a daemon
+// restart does not need to refetch the single most rate-limited call
+// the client makes.
+func ServerCacheFile() string {
+	return filepath.Join(DataDir(), "servers.json")
+}
+
 // EnsureSystemDirs creates the config and data directories with root:pvpn
 // ownership and mode 0750. Must be called as root (typically by the daemon).
 // Also self-heals ownership on existing config.toml and session.enc so they

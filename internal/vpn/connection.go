@@ -2,7 +2,6 @@ package vpn
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -87,6 +86,15 @@ type Connection struct {
 	lastKillSwitch  bool
 	lastProtocol    string
 	lastCustomDNS   []string
+
+	// lastKeyPair / lastCert are the credentials the live tunnel was
+	// built with. Proton certificates are valid for 7 days and are not
+	// bound to a particular server, so a reconnect can reuse them.
+	// Minting a fresh one per attempt — which is what this did before —
+	// made every wake and every link flap cost a /vpn/v1/certificate
+	// call, the most aggressively rate-limited endpoint we touch.
+	lastKeyPair *api.KeyPair
+	lastCert    *api.CertificateResponse
 
 	// Wake channel — poked by daemon on system resume to skip backoff
 	wakeCh chan struct{}
@@ -496,6 +504,10 @@ func (c *Connection) doConnect(ctx context.Context, server *api.LogicalServer, k
 		entryCountry = server.EntryCountry
 	}
 	c.mu.Lock()
+	// Remember the credentials this tunnel was built with so a reconnect
+	// can reuse them instead of minting a new certificate.
+	c.lastKeyPair = kp
+	c.lastCert = cert
 	c.info = ConnectionInfo{
 		ServerName:    server.Name,
 		ServerIP:      ps.EntryIP,
@@ -740,6 +752,9 @@ func (c *Connection) doReconnect(ctx context.Context) {
 
 	backoff := 2 * time.Second
 	maxBackoff := 2 * time.Minute
+	// Wall-clock time of the last reconnectAttempt, used to enforce
+	// minReconnectInterval regardless of how often wakeCh is poked.
+	var lastAttempt time.Time
 
 retryLoop:
 	for attempt := 1; ; attempt++ {
@@ -772,6 +787,7 @@ retryLoop:
 			c.onLog(fmt.Sprintf("Reconnect attempt %d...", attempt))
 		}
 
+		lastAttempt = time.Now()
 		err := c.reconnectAttempt(ctx, server, certFeats, ks, protocol, customDNS, hasKillSwitch)
 		if err == nil {
 			log.Printf("Reconnected successfully")
@@ -793,47 +809,68 @@ retryLoop:
 		// limiter.
 		wait := backoff
 		if isCertRateLimit(err) {
-			wait = 5 * time.Minute
+			// Prefer the cooldown the API actually asked for; fall back
+			// to 5 minutes when it gave no hint.
+			wait = api.RetryAfter(err)
+			if wait < certRateLimitCooldown {
+				wait = certRateLimitCooldown
+			}
 			log.Printf("Reconnect: cert API is rate-limiting us, waiting %s before retry", wait)
 			if c.onLog != nil {
-				c.onLog("Cert API rate-limited, waiting 5 min...")
+				c.onLog(fmt.Sprintf("Cert API rate-limited, waiting %s...", wait.Round(time.Second)))
 			}
 		}
 
-		// Wait for backoff, but allow wake signal to skip the wait
-		// (only when not rate-limited — see comment above).
-		select {
-		case <-ctx.Done():
-			if hasKillSwitch {
-				c.teardown()
-			}
-			c.setState(StateDisconnected)
-			return
-		case <-c.wakeCh:
-			if isCertRateLimit(err) {
-				// Drop the wake; keep waiting out the cooldown.
-				select {
-				case <-ctx.Done():
-					if hasKillSwitch {
-						c.teardown()
-					}
-					c.setState(StateDisconnected)
-					return
-				case <-time.After(wait):
+		// Wait for the backoff. A wake signal may shorten the wait, but
+		// never below minReconnectInterval and never while rate-limited.
+		//
+		// Before v0.3.x a wake reset the backoff to 2s and retried
+		// immediately. Every netlink event pokes wakeCh, and every retry
+		// mints a fresh keypair + certificate — so a laptop in modern
+		// standby, whose WiFi associates and drops all night, issued a
+		// cert request per flap and walked straight into a 2028. The
+		// floor below is what stops that.
+		if !isCertRateLimit(err) {
+			select {
+			case <-ctx.Done():
+				if hasKillSwitch {
+					c.teardown()
 				}
-			} else {
-				// System woke up — retry immediately with reset backoff
-				backoff = 2 * time.Second
+				c.setState(StateDisconnected)
+				return
+			case <-c.wakeCh:
+				// Honor the wake, but keep a hard floor between attempts.
+				if since := time.Since(lastAttempt); since < minReconnectInterval {
+					select {
+					case <-ctx.Done():
+						if hasKillSwitch {
+							c.teardown()
+						}
+						c.setState(StateDisconnected)
+						return
+					case <-time.After(minReconnectInterval - since):
+					}
+				}
+				// Do NOT reset the backoff: a netlink event is not
+				// evidence that the failure has cleared.
+				backoff = nextBackoff(backoff, maxBackoff)
 				continue retryLoop
+			case <-time.After(wait):
 			}
-		case <-time.After(wait):
+		} else {
+			// Rate-limited: ignore wake pokes entirely and wait it out.
+			select {
+			case <-ctx.Done():
+				if hasKillSwitch {
+					c.teardown()
+				}
+				c.setState(StateDisconnected)
+				return
+			case <-time.After(wait):
+			}
 		}
 
-		if isCertRateLimit(err) {
-			backoff = 2 * time.Second
-		} else {
-			backoff = nextBackoff(backoff, maxBackoff)
-		}
+		backoff = nextBackoff(backoff, maxBackoff)
 	}
 }
 
@@ -842,12 +879,20 @@ retryLoop:
 // many wrap layers it's been through (request cert: max retries
 // exceeded: ...).
 func isCertRateLimit(err error) bool {
-	var reqErr *api.RequestError
-	if !errors.As(err, &reqErr) {
-		return false
-	}
-	return reqErr.Code == 2028 || reqErr.HTTPStatus == 429
+	return api.IsRateLimit(err)
 }
+
+const (
+	// minReconnectInterval is the hard floor between two reconnect
+	// attempts. Each attempt costs a fresh Proton certificate, which is
+	// the most aggressively rate-limited call the client makes, so no
+	// amount of netlink churn may drive attempts faster than this.
+	minReconnectInterval = 30 * time.Second
+
+	// certRateLimitCooldown is the minimum pause after the cert API
+	// rate-limits us, used when the response carries no Retry-After.
+	certRateLimitCooldown = 5 * time.Minute
+)
 
 // reconnectAttempt performs a single reconnect attempt: generate keys,
 // request a cert, and call doConnect. Returns nil on success. On error
@@ -855,14 +900,28 @@ func isCertRateLimit(err error) bool {
 // split out from doReconnect so the outer backoff loop reads linearly
 // without goto.
 func (c *Connection) reconnectAttempt(ctx context.Context, server *api.LogicalServer, certFeats api.CertificateFeatures, ks bool, protocol string, customDNS []string, hasKillSwitch bool) error {
-	kp, err := api.GenerateKeyPair()
-	if err != nil {
-		return fmt.Errorf("keygen: %w", err)
-	}
+	// Reuse the existing certificate when it still has life in it.
+	// Certificates are valid for 7 days and are not tied to a server, so
+	// a reconnect after a wake or a link flap needs no API call at all —
+	// which means a rate-limited or unreachable API no longer prevents
+	// the tunnel from coming back.
+	kp, cert := c.reusableCredentials()
+	reused := kp != nil
 
-	cert, err := c.client.RequestCert(ctx, kp, certFeats)
-	if err != nil {
-		return fmt.Errorf("request cert: %w", err)
+	if !reused {
+		var err error
+		kp, err = api.GenerateKeyPair()
+		if err != nil {
+			return fmt.Errorf("keygen: %w", err)
+		}
+
+		cert, err = c.client.RequestCert(ctx, kp, certFeats)
+		if err != nil {
+			return fmt.Errorf("request cert: %w", err)
+		}
+	} else {
+		log.Printf("Reconnect: reusing certificate (valid for %s)",
+			time.Until(cert.ExpiresAt()).Round(time.Minute))
 	}
 
 	// Call doConnect directly — NOT connectWithProtocol — so we
@@ -875,6 +934,12 @@ func (c *Connection) reconnectAttempt(ctx context.Context, server *api.LogicalSe
 	if err := c.doConnect(ctx, server, kp, cert, certFeats, ks, protocol, customDNS, 15*time.Second); err != nil {
 		// Clean up partial state from failed attempt, keep kill switch
 		c.teardown(hasKillSwitch)
+		// If the reused certificate is what the server rejected, drop it
+		// so the next attempt mints a fresh one rather than replaying a
+		// bad credential forever.
+		if reused {
+			c.invalidateCredentials()
+		}
 		return err
 	}
 
@@ -892,6 +957,38 @@ func (c *Connection) reconnectAttempt(ctx context.Context, server *api.LogicalSe
 		}
 	}
 	return nil
+}
+
+// certReuseMargin is how much validity a certificate must have left
+// before a reconnect will reuse it rather than request a new one.
+const certReuseMargin = 15 * time.Minute
+
+// reusableCredentials returns the stored keypair and certificate when the
+// certificate still has more than certReuseMargin of validity left.
+// Returns (nil, nil) when a fresh certificate is needed.
+func (c *Connection) reusableCredentials() (*api.KeyPair, *api.CertificateResponse) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.lastKeyPair == nil || c.lastCert == nil {
+		return nil, nil
+	}
+	if c.lastCert.ExpirationTime <= 0 {
+		return nil, nil
+	}
+	if time.Now().After(c.lastCert.ExpiresAt().Add(-certReuseMargin)) {
+		return nil, nil
+	}
+	return c.lastKeyPair, c.lastCert
+}
+
+// invalidateCredentials forgets the stored certificate so the next
+// reconnect attempt requests a fresh one.
+func (c *Connection) invalidateCredentials() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lastKeyPair = nil
+	c.lastCert = nil
 }
 
 // nextBackoff doubles the current backoff duration, capped at cap.

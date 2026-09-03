@@ -44,6 +44,22 @@ type networkMonitor struct {
 	// eventually rate-limit us off Proton's cert API.
 	addrMu    sync.Mutex
 	seenAddrs map[string]bool
+
+	// seenLinks does the same job for RTM_NEWLINK. The kernel emits
+	// several messages per actual transition — bringing one dummy
+	// interface up and down produced 5 — and container/VM runtimes
+	// (docker veth, libvirt) churn constantly on an otherwise idle
+	// machine. Only a real change in a link's up/carrier state is worth
+	// waking the connection layer for.
+	linkMu    sync.Mutex
+	seenLinks map[int]linkState
+}
+
+// linkState is the part of a link's status we care about: whether it is
+// administratively up and whether it has carrier.
+type linkState struct {
+	up      bool
+	carrier bool
 }
 
 // newNetworkMonitor starts netlink subscriptions and returns a running
@@ -55,6 +71,7 @@ func newNetworkMonitor(onChange func()) *networkMonitor {
 		onChange:  onChange,
 		stop:      make(chan struct{}),
 		seenAddrs: make(map[string]bool),
+		seenLinks: make(map[int]linkState),
 	}
 
 	linkCh := make(chan netlink.LinkUpdate, 16)
@@ -97,6 +114,16 @@ func newNetworkMonitor(onChange func()) *networkMonitor {
 				flags := u.Flags
 				isUp := flags&unix.IFF_UP != 0
 				hasCarrier := flags&unix.IFF_LOWER_UP != 0
+
+				idx := u.Link.Attrs().Index
+				if u.Header.Type == unix.RTM_DELLINK {
+					m.forgetLink(idx)
+					continue
+				}
+				if !m.transitionedLink(idx, linkState{up: isUp, carrier: hasCarrier}) {
+					continue
+				}
+
 				log.Printf("Network monitor: link %q state=%s carrier=%v",
 					u.Link.Attrs().Name, boolFlag(isUp, "up", "down"), hasCarrier)
 				m.kick(trigger)
@@ -214,6 +241,29 @@ func (m *networkMonitor) transitionedAddr(ifindex int, addr string, isNew bool) 
 	}
 	delete(m.seenAddrs, key)
 	return true
+}
+
+// transitionedLink reports whether the link at ifindex actually changed
+// up/carrier state. A repeat of the state we already recorded returns
+// false, which is the common case: the kernel emits several RTM_NEWLINK
+// messages per real transition.
+func (m *networkMonitor) transitionedLink(ifindex int, state linkState) bool {
+	m.linkMu.Lock()
+	defer m.linkMu.Unlock()
+	prev, known := m.seenLinks[ifindex]
+	if known && prev == state {
+		return false
+	}
+	m.seenLinks[ifindex] = state
+	return true
+}
+
+// forgetLink drops state for a removed interface so the map does not
+// grow without bound on a machine that churns veths.
+func (m *networkMonitor) forgetLink(ifindex int) {
+	m.linkMu.Lock()
+	defer m.linkMu.Unlock()
+	delete(m.seenLinks, ifindex)
 }
 
 // kick pushes a non-blocking signal into the debounce channel.

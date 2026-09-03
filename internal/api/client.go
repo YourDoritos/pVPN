@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -19,6 +22,26 @@ const (
 	UserAgent      = "ProtonVPN/4.13.1 (Linux; go-pvpn)"
 	DefaultTimeout = 30 * time.Second
 	MaxRetries     = 3
+
+	// When the API answers 429 we park every request this client would
+	// make until the cooldown expires. Proton's gateway limiter counts
+	// requests received *while* you are limited, so continuing to send
+	// extends the ban instead of shortening it. The cooldown is honored
+	// locally — no packet leaves the box — which is the only way to let
+	// a limit actually expire.
+	//
+	// defaultRateLimitCooldown applies when the response carries no
+	// usable Retry-After header.
+	defaultRateLimitCooldown = 2 * time.Minute
+	maxRateLimitCooldown     = 30 * time.Minute
+
+	// minRefreshInterval is the shortest gap between two /auth/refresh
+	// calls. A refresh rotates the single-use refresh token, so a burst
+	// of them looks like token reuse to Proton and counts against the
+	// per-account auth limit. If a request 401s within this window of a
+	// successful refresh, the token is as fresh as it can be and the
+	// session is dead — refreshing again cannot help.
+	minRefreshInterval = 10 * time.Second
 )
 
 // Client is the Proton VPN API client. It handles authenticated requests,
@@ -39,6 +62,21 @@ type Client struct {
 	// by the pre-boot kill switch (see vpn/preboot.go). Only the
 	// vpn-api.proton.me hostname is ever pinned in practice.
 	pinnedHosts map[string][]string
+
+	// lastRefresh is when /auth/refresh last succeeded. Guarded by mu.
+	lastRefresh time.Time
+
+	// rateLimitedUntil is the wall-clock time before which this client
+	// refuses to send anything. Set from a 429 response's Retry-After.
+	// Guarded by mu.
+	rateLimitedUntil time.Time
+
+	// refreshMu single-flights /auth/refresh. Proton's refresh tokens are
+	// single-use and rotate on every successful refresh, so two concurrent
+	// refreshes race: the loser replays an already-rotated token, which
+	// Proton treats as token reuse (a session-compromise signal) and which
+	// counts hard against the per-account auth limits.
+	refreshMu sync.Mutex
 
 	// Called when tokens are rotated so the session can be persisted.
 	OnTokenRefresh func(uid, accessToken, refreshToken string)
@@ -151,6 +189,14 @@ func hostFromURL(raw string) string {
 	return u.Hostname()
 }
 
+// SetBaseURL overrides the API base URL. Used by tests and by anyone
+// pointing the client at a proxy; production always uses DefaultBaseURL.
+func (c *Client) SetBaseURL(u string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.baseURL = u
+}
+
 // SetSession updates the client's auth tokens.
 func (c *Client) SetSession(uid, accessToken, refreshToken string) {
 	c.mu.Lock()
@@ -196,10 +242,96 @@ type RequestError struct {
 	HTTPStatus int
 	Code       int
 	Message    string
+
+	// RetryAfter is how long the server (or our own cooldown) says to
+	// wait before trying again. Zero when unknown.
+	RetryAfter time.Duration
+
+	// Local is true when this error was produced by the client's own
+	// rate-limit cooldown without contacting the server at all.
+	Local bool
 }
 
 func (e *RequestError) Error() string {
+	if e.Local {
+		return fmt.Sprintf("rate-limit cooldown active, request not sent (%s remaining)",
+			e.RetryAfter.Round(time.Second))
+	}
+	if e.RetryAfter > 0 {
+		return fmt.Sprintf("API error %d (HTTP %d): %s (retry after %s)",
+			e.Code, e.HTTPStatus, e.Message, e.RetryAfter.Round(time.Second))
+	}
 	return fmt.Sprintf("API error %d (HTTP %d): %s", e.Code, e.HTTPStatus, e.Message)
+}
+
+// IsRateLimit reports whether err is a 429 / Proton "too many requests"
+// error, including one raised locally by the client's own cooldown.
+func IsRateLimit(err error) bool {
+	var reqErr *RequestError
+	if !errors.As(err, &reqErr) {
+		return false
+	}
+	return reqErr.HTTPStatus == 429 || reqErr.Code == 2028
+}
+
+// RetryAfter returns how long to wait before retrying, or 0 if err is not
+// a rate-limit error or carries no hint.
+func RetryAfter(err error) time.Duration {
+	var reqErr *RequestError
+	if !errors.As(err, &reqErr) {
+		return 0
+	}
+	return reqErr.RetryAfter
+}
+
+// RateLimitedFor returns how long this client will refuse to send
+// requests, or 0 if it is not currently in a cooldown.
+func (c *Client) RateLimitedFor() time.Duration {
+	c.mu.RLock()
+	until := c.rateLimitedUntil
+	c.mu.RUnlock()
+	if d := time.Until(until); d > 0 {
+		return d
+	}
+	return 0
+}
+
+// enterCooldown parks all outgoing requests for d (clamped), unless a
+// longer cooldown is already in effect.
+func (c *Client) enterCooldown(d time.Duration) {
+	if d <= 0 {
+		d = defaultRateLimitCooldown
+	}
+	if d > maxRateLimitCooldown {
+		d = maxRateLimitCooldown
+	}
+	until := time.Now().Add(d)
+	c.mu.Lock()
+	if until.After(c.rateLimitedUntil) {
+		c.rateLimitedUntil = until
+	}
+	c.mu.Unlock()
+}
+
+// parseRetryAfter reads the Retry-After header in either supported form
+// (delta-seconds or HTTP-date). Returns 0 when absent or unparseable.
+func parseRetryAfter(h http.Header) time.Duration {
+	v := h.Get("Retry-After")
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs < 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 // IsAuthError returns true if this error indicates the session is permanently
@@ -235,15 +367,31 @@ func IsAuthError(err error) bool {
 func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, result interface{}) error {
 	var lastErr error
 
+	// A single logical call refreshes at most once. Every refresh spends
+	// the single-use refresh token and rotates it; if the retry that
+	// follows a *successful* refresh still gets a 401, the session is
+	// genuinely dead and refreshing again just burns tokens against the
+	// per-account auth rate limit.
+	refreshed := false
+
 	for attempt := 0; attempt <= MaxRetries; attempt++ {
 		if attempt > 0 {
-			// Brief pause before retry
+			// Backoff with jitter. Without jitter, several components
+			// that failed together (session init, cert refresh, the
+			// reconnect loop) retry in lockstep and arrive at the API
+			// as a burst, which is what a limiter reacts to.
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(time.Duration(attempt) * time.Second):
+			case <-time.After(backoffWithJitter(attempt)):
 			}
 		}
+
+		// Token used for this attempt, so a 401 handler can tell whether
+		// someone else already rotated it while we were in flight.
+		c.mu.RLock()
+		usedToken := c.accessToken
+		c.mu.RUnlock()
 
 		err := c.doSingleRequest(ctx, method, path, body, result)
 		if err == nil {
@@ -259,8 +407,14 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 
 		switch reqErr.HTTPStatus {
 		case 401:
+			if refreshed {
+				// We already refreshed once for this call and still got
+				// a 401 — the session is dead, not stale.
+				return err
+			}
+			refreshed = true
 			// Try to refresh tokens
-			if refreshErr := c.refreshTokens(ctx); refreshErr != nil {
+			if refreshErr := c.refreshTokens(ctx, usedToken); refreshErr != nil {
 				// Check if the refresh itself got a permanent auth error
 				// (e.g. error 10013 = refresh token revoked)
 				if IsAuthError(refreshErr) {
@@ -271,8 +425,12 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 			continue // Retry with new tokens
 
 		case 429:
-			// Rate limited — wait and retry
-			continue
+			// Rate limited. Do NOT retry: the cooldown is already armed
+			// by doSingleRequest, and every further request we send
+			// while limited pushes Proton's window further out. Hand the
+			// error (with its Retry-After) to the caller and let it
+			// decide when to come back.
+			return err
 
 		case 503:
 			// Service unavailable — retry
@@ -287,7 +445,28 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	return fmt.Errorf("max retries exceeded: %w", lastErr)
 }
 
+// backoffWithJitter returns the pause before retry attempt n (1-based):
+// roughly n seconds, spread over a +/-40% window.
+func backoffWithJitter(attempt int) time.Duration {
+	base := time.Duration(attempt) * time.Second
+	jitter := time.Duration(rand.Int63n(int64(base*4/5+1))) - base*2/5
+	return base + jitter
+}
+
 func (c *Client) doSingleRequest(ctx context.Context, method, path string, body interface{}, result interface{}) error {
+	// Local rate-limit gate. Once Proton has told us to back off, nothing
+	// this client would send is worth sending: the request cannot succeed
+	// and its arrival extends the limit. Fail fast without touching the
+	// network so the window can actually close.
+	if remaining := c.RateLimitedFor(); remaining > 0 {
+		return &RequestError{
+			HTTPStatus: 429,
+			Code:       2028,
+			RetryAfter: remaining,
+			Local:      true,
+		}
+	}
+
 	var bodyReader io.Reader
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
@@ -328,18 +507,30 @@ func (c *Client) doSingleRequest(ctx context.Context, method, path string, body 
 
 	// Check for API-level error
 	if resp.StatusCode >= 400 {
+		var retryAfter time.Duration
+		if resp.StatusCode == 429 {
+			retryAfter = parseRetryAfter(resp.Header)
+			// Arm the cooldown before returning so every other caller on
+			// this client stops sending immediately, not just this one.
+			c.enterCooldown(retryAfter)
+			if retryAfter == 0 {
+				retryAfter = defaultRateLimitCooldown
+			}
+		}
 		var apiErr APIError
 		if json.Unmarshal(respBody, &apiErr) == nil && apiErr.Code != 0 {
 			return &RequestError{
 				HTTPStatus: resp.StatusCode,
 				Code:       apiErr.Code,
 				Message:    apiErr.Error,
+				RetryAfter: retryAfter,
 			}
 		}
 		return &RequestError{
 			HTTPStatus: resp.StatusCode,
 			Code:       0,
 			Message:    string(respBody),
+			RetryAfter: retryAfter,
 		}
 	}
 
@@ -352,11 +543,38 @@ func (c *Client) doSingleRequest(ctx context.Context, method, path string, body 
 	return nil
 }
 
-// refreshTokens attempts to refresh the access token using the refresh token.
-func (c *Client) refreshTokens(ctx context.Context) error {
+// refreshTokens attempts to refresh the access token using the refresh
+// token. staleToken is the access token the caller was using when it got
+// its 401; if another goroutine has already rotated past it by the time
+// we get the lock, we return success without spending a second refresh.
+//
+// Proton's refresh tokens are single-use and rotate on every successful
+// refresh. Two concurrent refreshes mean the loser replays an already
+// rotated token, which Proton treats as token reuse — it can invalidate
+// the whole session and counts against per-account auth rate limits.
+// This mutex makes refresh single-flight per client.
+func (c *Client) refreshTokens(ctx context.Context, staleToken string) error {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+
 	c.mu.RLock()
 	refreshToken := c.refreshToken
+	currentAccess := c.accessToken
+	lastRefresh := c.lastRefresh
 	c.mu.RUnlock()
+
+	// Someone else refreshed while we waited for the lock — the caller
+	// should just retry with the token that is now installed.
+	if staleToken != "" && currentAccess != staleToken {
+		return nil
+	}
+
+	// A refresh just happened. Whoever is still getting 401s is not
+	// suffering from a stale token, and rotating again would only spend
+	// another single-use token against the auth rate limit.
+	if !lastRefresh.IsZero() && time.Since(lastRefresh) < minRefreshInterval {
+		return nil
+	}
 
 	if refreshToken == "" {
 		return fmt.Errorf("no refresh token available")
@@ -377,6 +595,7 @@ func (c *Client) refreshTokens(ctx context.Context) error {
 	c.mu.Lock()
 	c.accessToken = result.AccessToken
 	c.refreshToken = result.RefreshToken
+	c.lastRefresh = time.Now()
 	c.mu.Unlock()
 
 	if c.OnTokenRefresh != nil {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/ProtonVPN/go-vpn-lib/ed25519"
@@ -47,12 +48,24 @@ func (c *Client) RequestCert(ctx context.Context, kp *KeyPair, features Certific
 		ClientPublicKey:     kp.PublicKeyPEM,
 		ClientPublicKeyMode: "EC",
 		Mode:                "persistent",
-		DeviceName:          fmt.Sprintf("pvpn-%d", time.Now().Unix()),
+		DeviceName:          deviceName(),
 		Duration:            "10080 min", // 7 days
 		Features:            features,
 	}
 
 	return c.RequestCertificate(ctx, req)
+}
+
+// deviceName returns a stable identifier for this machine. It must not
+// change between cert requests: the previous implementation embedded a
+// unix timestamp, so every single certificate request — and there is one
+// per reconnect attempt — registered a brand-new device name against the
+// account.
+func deviceName() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return "pvpn-" + h
+	}
+	return "pvpn-linux"
 }
 
 // CertRefresher manages automatic certificate rotation in the background.

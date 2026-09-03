@@ -55,6 +55,21 @@ type Daemon struct {
 
 	sessionReady chan struct{} // closed when initSession completes
 
+	// initBackoff / initNextAttempt pace retryInitSessionIfStuck. Without
+	// them, every netlink event (WiFi roam, DHCP renew, IPv6 RA, carrier
+	// flap, veth churn) re-ran a full session init for as long as the
+	// server list stayed empty — and a rate-limited GetServers guarantees
+	// it stays empty, so the failure fed itself. Measured at ~0.7 req/s
+	// sustained, which keeps a Proton rate-limit window open forever.
+	// Guarded by mu.
+	initBackoff     time.Duration
+	initNextAttempt time.Time
+
+	// serverCache persists the logical server list across restarts. Set
+	// in Run; nil in tests, which keeps them independent of on-disk
+	// state.
+	serverCache *api.ServerCache
+
 	listener net.Listener
 	sleepMon *sleepMonitor
 	netMon   *networkMonitor
@@ -134,8 +149,30 @@ func (d *Daemon) Run(socketPath string) error {
 	// poll (F-12 fix).
 	d.netMon = newNetworkMonitor(d.onNetworkChange)
 
-	// Try to restore session and load servers in background
-	go d.initSession()
+	// Seed the server list from disk before anything else. /vpn/v1/logicals
+	// is the heaviest and most rate-limited call the client makes, and a
+	// daemon that starts with an empty list is the exact condition that
+	// used to drive retryInitSessionIfStuck on every netlink event. With
+	// a cache we start usable — and stay usable if the API is unreachable.
+	d.serverCache = api.NewServerCache(config.ServerCacheFile())
+	if servers, age, err := d.serverCache.Load(); err != nil {
+		log.Printf("Server cache unusable (will refetch): %v", err)
+	} else if len(servers) > 0 {
+		d.mu.Lock()
+		d.serverList = servers
+		d.mu.Unlock()
+		log.Printf("Loaded %d servers from cache (age %s)", len(servers), age.Round(time.Minute))
+	}
+
+	// Try to restore session and load servers in background. This holds
+	// initSessionMu so a netlink event arriving mid-fetch cannot start a
+	// second, concurrent full init (which used to fetch the whole 18k
+	// server list twice within the same second).
+	go func() {
+		d.initSessionMu.Lock()
+		defer d.initSessionMu.Unlock()
+		d.noteInitResult(d.initSession())
+	}()
 
 	// Auto-connect if configured
 	go d.autoConnect()
@@ -182,11 +219,15 @@ func (d *Daemon) signalSessionReady() {
 	}
 }
 
-func (d *Daemon) initSession() {
+// initSession validates the saved session and loads the server list.
+// Returns the error that left the daemon without a server list, or nil
+// on full success. Callers must pass the result to noteInitResult so the
+// retry pacing stays correct.
+func (d *Daemon) initSession() error {
 	defer d.signalSessionReady()
 
 	if !d.client.IsAuthenticated() {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
 	defer cancel()
@@ -203,23 +244,91 @@ func (d *Daemon) initSession() {
 		} else {
 			log.Printf("Session validation failed (transient, keeping session): %v", err)
 		}
-		return
+		return err
 	}
 	d.mu.Lock()
 	d.vpnInfo = info
 	d.mu.Unlock()
 	log.Printf("Session restored: %s (tier %d)", info.VPN.PlanTitle, info.VPN.MaxTier)
 
-	// Load server list
+	// Load server list. A cache entry that is still fresh spares us the
+	// multi-megabyte fetch entirely.
+	if d.serverCache != nil {
+		if cached, age, cacheErr := d.serverCache.Load(); cacheErr == nil && api.Fresh(age) {
+			d.mu.Lock()
+			d.serverList = cached
+			d.mu.Unlock()
+			log.Printf("Server list still fresh (age %s), skipping fetch", age.Round(time.Minute))
+			return nil
+		}
+	}
+
 	servers, err := d.client.GetServers(ctx)
 	if err != nil {
+		// A stale cache beats no list at all: it keeps the daemon
+		// connectable and, critically, stops retryInitSessionIfStuck
+		// from firing on every netlink event for the rest of the session.
+		d.mu.RLock()
+		haveList := len(d.serverList) > 0
+		d.mu.RUnlock()
+		if haveList {
+			log.Printf("Server refresh failed, keeping cached list: %v", err)
+			return nil
+		}
 		log.Printf("Failed to load servers: %v", err)
-		return
+		return err
 	}
 	d.mu.Lock()
 	d.serverList = servers.LogicalServers
 	d.mu.Unlock()
 	log.Printf("Loaded %d servers", len(servers.LogicalServers))
+
+	if d.serverCache != nil {
+		if err := d.serverCache.Save(servers.LogicalServers); err != nil {
+			log.Printf("Warning: could not cache server list: %v", err)
+		}
+	}
+	return nil
+}
+
+// Retry pacing for a session init that left us without a server list.
+const (
+	initRetryMin = 30 * time.Second
+	initRetryMax = 30 * time.Minute
+)
+
+// noteInitResult records the outcome of an initSession attempt and sets
+// the earliest time the next one may run. On success the pacing resets.
+// On a rate-limit error we wait out whatever the API asked for rather
+// than applying our own (usually shorter) backoff.
+func (d *Daemon) noteInitResult(err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if err == nil {
+		d.initBackoff = 0
+		d.initNextAttempt = time.Time{}
+		return
+	}
+
+	wait := d.initBackoff * 2
+	if wait < initRetryMin {
+		wait = initRetryMin
+	}
+	if wait > initRetryMax {
+		wait = initRetryMax
+	}
+
+	// Honor the server's own cooldown when it is longer than ours.
+	if api.IsRateLimit(err) {
+		if ra := api.RetryAfter(err); ra > wait {
+			wait = ra
+		}
+		log.Printf("Session init rate-limited; next attempt in %s", wait.Round(time.Second))
+	}
+
+	d.initBackoff = wait
+	d.initNextAttempt = time.Now().Add(wait)
 }
 
 func (d *Daemon) autoConnect() {
@@ -596,7 +705,7 @@ func (d *Daemon) cmdLogin(params json.RawMessage) *ipc.Response {
 	d.store.Save(&session)
 
 	// Load VPN info and servers
-	d.initSession()
+	d.noteInitResult(d.initSession())
 
 	return &ipc.Response{OK: true}
 }
@@ -749,17 +858,45 @@ func (d *Daemon) retryInitSessionIfStuck() {
 	needsRetry := d.client.IsAuthenticated() &&
 		len(d.serverList) == 0 &&
 		d.conn == nil
+	nextAttempt := d.initNextAttempt
 	d.mu.RUnlock()
 	if !needsRetry {
 		return
 	}
+
+	// Pacing gate. Netlink events are not a signal that anything has
+	// changed at Proton's end — on a laptop they fire continuously from
+	// WiFi roaming, powersave carrier flaps, DHCP renewals, IPv6
+	// privacy-address rotation and container veth churn. Retrying a
+	// failed init on every one of them is what turned a single 429 into
+	// a permanent one.
+	if !nextAttempt.IsZero() && time.Now().Before(nextAttempt) {
+		return
+	}
+
+	// If the API client is already parked in a rate-limit cooldown there
+	// is nothing to gain by starting an attempt that cannot send.
+	if remaining := d.client.RateLimitedFor(); remaining > 0 {
+		return
+	}
+
 	if !d.initSessionMu.TryLock() {
 		return
 	}
 	go func() {
 		defer d.initSessionMu.Unlock()
+
+		// Re-check under the lock: the attempt we queued behind may have
+		// already succeeded, making this one redundant.
+		d.mu.RLock()
+		stillStuck := len(d.serverList) == 0 && d.conn == nil
+		d.mu.RUnlock()
+		if !stillStuck {
+			return
+		}
+
 		log.Printf("Bootstrap recovery: re-running initSession (no servers loaded)")
-		d.initSession()
+		d.noteInitResult(d.initSession())
 
 		d.mu.RLock()
 		recovered := len(d.serverList) > 0 && d.conn == nil
