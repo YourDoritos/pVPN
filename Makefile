@@ -6,7 +6,7 @@ REAL_USER ?= $(or $(SUDO_USER),$(USER))
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: all build clean install uninstall
+.PHONY: all build clean install uninstall screenshots
 
 all: build
 
@@ -14,6 +14,13 @@ build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o pvpnd  ./cmd/pvpnd
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o pvpn   ./cmd/pvpn
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o pvpnctl ./cmd/pvpnctl
+
+# Regenerates the README images from the current UI code. Needs chromium (for
+# the colour flag emoji in the server grid) and ImageMagick; only ever run by
+# hand, never by CI.
+screenshots:
+	go run ./tools/screenshot -out assets
+	./tools/screenshot/compose.sh assets
 
 clean:
 	rm -f pvpn pvpnd pvpnctl

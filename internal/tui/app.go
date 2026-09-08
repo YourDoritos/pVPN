@@ -465,6 +465,14 @@ func (a App) View() string {
 }
 
 func (a App) renderNav(extra string) string {
+	return RenderNav(a.width, a.view, extra)
+}
+
+// RenderNav draws the brand and tab bar.
+//
+// Exported so tools/screenshot puts the real tab bar in the README images
+// rather than a second copy of it that can drift from this one.
+func RenderNav(width int, active View, extra string) string {
 	brand := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(ColorPrimary).
@@ -497,7 +505,7 @@ func (a App) renderNav(extra string) string {
 	var parts []string
 	for _, t := range tabs {
 		label := fmt.Sprintf("%s %s", t.key, t.label)
-		if a.view == t.view {
+		if active == t.view {
 			parts = append(parts, activeTab.Render(label))
 		} else {
 			parts = append(parts, inactiveTab.Render(label))
@@ -507,7 +515,7 @@ func (a App) renderNav(extra string) string {
 	tabBar := lipgloss.JoinHorizontal(lipgloss.Center, parts...)
 	nav := lipgloss.JoinHorizontal(lipgloss.Center, brand, "  ", tabBar, extra)
 	return lipgloss.NewStyle().
-		Width(a.width).
+		Width(width).
 		Render(nav)
 }
 

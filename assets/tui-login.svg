@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="817" height="632" viewBox="0 0 817 632" font-family="JetBrainsMono Nerd Font, JetBrains Mono, monospace, Noto Color Emoji, Apple Color Emoji, Segoe UI Emoji" font-size="14.0">
+<rect x="0" y="0" width="817" height="632" rx="10" fill="#14141f"/>
+<rect x="0" y="0" width="817" height="28" rx="10" fill="#1d1d2b"/>
+<rect x="0" y="10" width="817" height="18" fill="#1d1d2b"/>
+<circle cx="18.0" cy="14.0" r="5" fill="#ff5f57"/>
+<circle cx="36.0" cy="14.0" r="5" fill="#febc2e"/>
+<circle cx="54.0" cy="14.0" r="5" fill="#28c840"/>
+<text x="408.4" y="18.0" fill="#8a8a9a" font-size="12" text-anchor="middle">pvpn — sign in</text>
+<text x="190.00" y="184.00" fill="#3c3c5c" xml:space="preserve">╭──────────────────────────────────────────────────╮</text>
+<text x="190.00" y="202.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="618.40" y="202.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="190.00" y="220.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="215.20" y="220.00" fill="#6d49ff" font-weight="bold" xml:space="preserve">pVPN - Proton VPN</text>
+<text x="618.40" y="220.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="190.00" y="238.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="215.20" y="238.00" fill="#888899" xml:space="preserve">Sign in with your Proton account</text>
+<text x="618.40" y="238.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="190.00" y="256.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="618.40" y="256.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="190.00" y="274.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="215.20" y="274.00" fill="#888899" xml:space="preserve">Email</text>
+<text x="618.40" y="274.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="190.00" y="292.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="198.40" y="292.00" fill="#e8e8e8" xml:space="preserve">  &gt; proton@email.com</text>
+<text x="618.40" y="292.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="190.00" y="310.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="618.40" y="310.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="190.00" y="328.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="215.20" y="328.00" fill="#888899" xml:space="preserve">Password</text>
+<text x="618.40" y="328.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="190.00" y="346.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="198.40" y="346.00" fill="#e8e8e8" xml:space="preserve">  &gt; password</text>
+<text x="618.40" y="346.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="190.00" y="364.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="618.40" y="364.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="190.00" y="382.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="618.40" y="382.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="190.00" y="400.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="618.40" y="400.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="190.00" y="418.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="215.20" y="418.00" fill="#888899" xml:space="preserve">tab: switch field  enter: submit  ctrl+c: quit</text>
+<text x="618.40" y="418.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="190.00" y="436.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="618.40" y="436.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="190.00" y="454.00" fill="#3c3c5c" xml:space="preserve">╰──────────────────────────────────────────────────╯</text>
+</svg>

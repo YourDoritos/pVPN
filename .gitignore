@@ -3,6 +3,7 @@
 /pvpnd
 /pvpnctl
 /conntest
+/screenshot
 *.exe
 
 # Internal planning docs

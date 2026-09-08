@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="817" height="632" viewBox="0 0 817 632" font-family="JetBrainsMono Nerd Font, JetBrains Mono, monospace, Noto Color Emoji, Apple Color Emoji, Segoe UI Emoji" font-size="14.0">
+<rect x="0" y="0" width="817" height="632" rx="10" fill="#14141f"/>
+<rect x="0" y="0" width="817" height="28" rx="10" fill="#1d1d2b"/>
+<rect x="0" y="10" width="817" height="18" fill="#1d1d2b"/>
+<circle cx="18.0" cy="14.0" r="5" fill="#ff5f57"/>
+<circle cx="36.0" cy="14.0" r="5" fill="#febc2e"/>
+<circle cx="54.0" cy="14.0" r="5" fill="#28c840"/>
+<text x="408.4" y="18.0" fill="#8a8a9a" font-size="12" text-anchor="middle">pvpn — status</text>
+<rect x="215.20" y="153.00" width="8.90" height="18.00" fill="#2ecc71"/>
+<rect x="223.60" y="153.00" width="8.90" height="18.00" fill="#2ecc71"/>
+<rect x="232.00" y="153.00" width="8.90" height="18.00" fill="#2ecc71"/>
+<rect x="240.40" y="153.00" width="8.90" height="18.00" fill="#2ecc71"/>
+<rect x="248.80" y="153.00" width="8.90" height="18.00" fill="#2ecc71"/>
+<rect x="257.20" y="153.00" width="8.90" height="18.00" fill="#2ecc71"/>
+<rect x="265.60" y="153.00" width="8.90" height="18.00" fill="#2ecc71"/>
+<rect x="274.00" y="153.00" width="8.90" height="18.00" fill="#2ecc71"/>
+<rect x="282.40" y="153.00" width="8.90" height="18.00" fill="#2ecc71"/>
+<rect x="290.80" y="153.00" width="8.90" height="18.00" fill="#2ecc71"/>
+<rect x="299.20" y="153.00" width="8.90" height="18.00" fill="#2ecc71"/>
+<text x="89.20" y="58.00" fill="#00f0c8" xml:space="preserve">╭──────────╮</text>
+<text x="190.00" y="58.00" fill="#3c3c5c" xml:space="preserve">╭───────────╮╭────────────╮</text>
+<text x="30.40" y="76.00" fill="#6d49ff" font-weight="bold" xml:space="preserve">pVPN</text>
+<text x="89.20" y="76.00" fill="#00f0c8" xml:space="preserve">│</text>
+<text x="106.00" y="76.00" fill="#e8e8e8" font-weight="bold" xml:space="preserve">1 Status</text>
+<text x="181.60" y="76.00" fill="#00f0c8" xml:space="preserve">│</text>
+<text x="190.00" y="76.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="206.80" y="76.00" fill="#888899" xml:space="preserve">2 Servers</text>
+<text x="290.80" y="76.00" fill="#3c3c5c" xml:space="preserve">││</text>
+<text x="316.00" y="76.00" fill="#888899" xml:space="preserve">3 Settings</text>
+<text x="408.40" y="76.00" fill="#3c3c5c" xml:space="preserve">│</text>
+<text x="89.20" y="94.00" fill="#00f0c8" xml:space="preserve">╰──────────╯</text>
+<text x="190.00" y="94.00" fill="#3c3c5c" xml:space="preserve">╰───────────╯╰────────────╯</text>
+<text x="190.00" y="130.00" fill="#6d49ff" xml:space="preserve">╭──────────────────────────────────────────────────╮</text>
+<text x="190.00" y="148.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="618.40" y="148.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="166.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="223.60" y="166.00" fill="#1a1a2e" font-weight="bold" xml:space="preserve">CONNECTED</text>
+<text x="307.60" y="166.00" fill="#e8e8e8" xml:space="preserve">  DE#905</text>
+<text x="618.40" y="166.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="184.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="618.40" y="184.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="202.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="215.20" y="202.00" fill="#888899" xml:space="preserve">Server</text>
+<text x="332.80" y="202.00" fill="#e8e8e8" xml:space="preserve">  🇩🇪 DE#905</text>
+<text x="618.40" y="202.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="220.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="215.20" y="220.00" fill="#888899" xml:space="preserve">Country</text>
+<text x="332.80" y="220.00" fill="#e8e8e8" xml:space="preserve">  🇩🇪 DE</text>
+<text x="618.40" y="220.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="238.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="215.20" y="238.00" fill="#888899" xml:space="preserve">Server IP</text>
+<text x="332.80" y="238.00" fill="#e8e8e8" xml:space="preserve">  194.126.177.218</text>
+<text x="618.40" y="238.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="256.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="215.20" y="256.00" fill="#888899" xml:space="preserve">Duration</text>
+<text x="332.80" y="256.00" fill="#e8e8e8" xml:space="preserve">  1h 23m 4s</text>
+<text x="618.40" y="256.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="274.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="215.20" y="274.00" fill="#888899" xml:space="preserve">Port Forward</text>
+<text x="332.80" y="274.00" fill="#e8e8e8" xml:space="preserve">  51423 (TCP+UDP)</text>
+<text x="618.40" y="274.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="292.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="618.40" y="292.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="310.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="215.20" y="310.00" fill="#888899" xml:space="preserve">--- Traffic ---</text>
+<text x="618.40" y="310.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="328.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="215.20" y="328.00" fill="#888899" xml:space="preserve">Upload</text>
+<text x="332.80" y="328.00" fill="#e8e8e8" xml:space="preserve">  128.4 MB</text>
+<text x="618.40" y="328.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="346.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="215.20" y="346.00" fill="#888899" xml:space="preserve">Download</text>
+<text x="332.80" y="346.00" fill="#e8e8e8" xml:space="preserve">  2.1 GB</text>
+<text x="618.40" y="346.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="364.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="215.20" y="364.00" fill="#888899" xml:space="preserve">Handshake</text>
+<text x="332.80" y="364.00" fill="#e8e8e8" xml:space="preserve">  19:07:37</text>
+<text x="618.40" y="364.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="382.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="618.40" y="382.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="400.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="215.20" y="400.00" fill="#888899" xml:space="preserve">d: disconnect  r: refresh stats</text>
+<text x="618.40" y="400.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="418.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="618.40" y="418.00" fill="#6d49ff" xml:space="preserve">│</text>
+<text x="190.00" y="436.00" fill="#6d49ff" xml:space="preserve">╰──────────────────────────────────────────────────╯</text>
+</svg>
