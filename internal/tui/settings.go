@@ -350,7 +350,11 @@ func (m SettingsModel) ViewWithConfig(cfg *config.Config) string {
 		help,
 	)
 
-	box := StyleBox.Width(60).Render(content)
+	// 70, not 60: at 60 the box leaves 54 columns inside its padding, and
+	// both the account row (label, address, plan: 55) and the key hint line
+	// (62) wrapped out of it — the plan name and "s: save" fell onto lines of
+	// their own. 70 fits the widest of them with a little room left.
+	box := StyleBox.Width(70).Render(content)
 	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, box)
 }
 
@@ -363,10 +367,14 @@ func (m SettingsModel) renderAccountRow() string {
 	if plan == "" {
 		plan = "Unknown"
 	}
-	return fmt.Sprintf("%-20s  %s  %s  %s",
+	// Two lines, not one. The settings box is 60 columns; label, address,
+	// plan and hint on a single row come to about 75, and the overflow wrapped
+	// out past the box border instead of inside it.
+	return fmt.Sprintf("%-20s  %s  %s\n%-20s  %s",
 		"Account",
 		StyleValue.Render(obfuscated),
 		StyleDim.Render("("+plan+")"),
+		"",
 		StyleWarning.Render("[enter to logout]"))
 }
 
