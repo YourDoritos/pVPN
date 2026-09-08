@@ -153,3 +153,15 @@ func TestCountryName_AllMappedEntries(t *testing.T) {
 		}
 	}
 }
+
+// Proton's API says "UK", not the ISO "GB". Both the flag and the name
+// lookup have to normalise it, or the United Kingdom shows as two boxed
+// letters next to the bare string "UK".
+func TestCountryUKNormalisedToGB(t *testing.T) {
+	if got, want := countryFlag("UK"), countryFlag("GB"); got != want {
+		t.Errorf("countryFlag(UK) = %q, want the GB flag %q", got, want)
+	}
+	if got, want := countryName("UK"), "United Kingdom"; got != want {
+		t.Errorf("countryName(UK) = %q, want %q", got, want)
+	}
+}

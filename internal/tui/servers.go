@@ -817,7 +817,21 @@ func (m ServersModel) renderCard(idx int) string {
 	return cardBorderNormal.Render(content)
 }
 
+// isoCountry maps the codes Proton's API uses to the ISO 3166-1 alpha-2 ones
+// the flag and name lookups expect.
+//
+// Proton returns "UK" for the United Kingdom, which is not an ISO code: the
+// regional indicator pair for it is not a flag sequence, so it rendered as
+// two boxed letters, and the name lookup missed and fell through to "UK".
+func isoCountry(code string) string {
+	if strings.ToUpper(code) == "UK" {
+		return "GB"
+	}
+	return code
+}
+
 func countryFlag(code string) string {
+	code = isoCountry(code)
 	if len(code) != 2 {
 		return "  "
 	}
@@ -844,7 +858,7 @@ func countryName(code string) string {
 		"TR": "Turkey", "TW": "Taiwan", "UA": "Ukraine", "US": "United States", "VN": "Vietnam",
 		"ZA": "South Africa",
 	}
-	if name, ok := names[strings.ToUpper(code)]; ok {
+	if name, ok := names[strings.ToUpper(isoCountry(code))]; ok {
 		return name
 	}
 	return code
