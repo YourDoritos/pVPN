@@ -13,7 +13,6 @@ depends=('glibc')
 optdepends=('noto-fonts-emoji: country flag glyphs in the server list')
 makedepends=('go>=1.26' 'git')
 install=pvpn-go.install
-backup=('etc/pvpn/config.toml')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
 # Regenerated from the real tarball by the aur-publish job on every tag.
 # If you bump pkgver by hand, run `updpkgsums` so the two stay in step.
