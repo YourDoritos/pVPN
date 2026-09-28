@@ -71,7 +71,22 @@ jobs:
       - name: Clone AUR repo
         run: git clone ssh://aur@aur.archlinux.org/pvpn-go.git aur
 
+      - name: Checksum the release tarball
+        id: tarball
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          URL="https://github.com/YourDoritos/pVPN/archive/v${VERSION}.tar.gz"
+
+          # -f is what keeps a 5xx from being checksummed as if it were the
+          # source; gzip -t catches a truncated body that still came back 200.
+          curl -fsSL --retry 5 --retry-delay 5 -o source.tar.gz "${URL}"
+          gzip -t source.tar.gz
+
+          echo "sha256=$(sha256sum source.tar.gz | cut -d' ' -f1)" >> "${GITHUB_OUTPUT}"
+
       - name: Sync PKGBUILD + install hook from repo and push
+        env:
+          SHA256: ${{ steps.tarball.outputs.sha256 }}
         run: |
           VERSION=${GITHUB_REF_NAME#v}
 
@@ -81,9 +96,11 @@ jobs:
 
           cd aur
 
-          # Pin to the tag being released, reset pkgrel.
+          # Pin to the tag being released, reset pkgrel, and swap in the
+          # checksum taken from the tarball users will actually download.
           sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD
           sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('${SHA256}')/" PKGBUILD
 
           # Derive makedepends from the PKGBUILD rather than hand-copying it.
           # AUR helpers resolve dependencies from .SRCINFO, so a stale value
@@ -119,10 +136,15 @@ jobs:
           	depends = glibc
           $(printf "${OPTDEPENDS_LINES}")
           	source = pvpn-go-${VERSION}.tar.gz::https://github.com/YourDoritos/pVPN/archive/v${VERSION}.tar.gz
-          	sha256sums = SKIP
+          	sha256sums = ${SHA256}
 
           pkgname = pvpn-go
           SRCINFO
+
+          # A sed that matched nothing would quietly republish SKIP, which is
+          # the exact thing this is meant to stop shipping.
+          grep -qE "^sha256sums=\\('[0-9a-f]{64}'\\)$" PKGBUILD
+          grep -qE "^[[:space:]]sha256sums = [0-9a-f]{64}$" .SRCINFO
 
           git config user.email "paul.goessmann@proton.me"
           git config user.name "YourDoritos"
