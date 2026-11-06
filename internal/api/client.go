@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -18,8 +19,7 @@ import (
 
 const (
 	DefaultBaseURL = "https://vpn-api.proton.me"
-	AppVersion     = "linux-vpn@4.13.1"
-	UserAgent      = "ProtonVPN/4.13.1 (Linux; go-pvpn)"
+
 	DefaultTimeout = 30 * time.Second
 	MaxRetries     = 3
 
@@ -43,6 +43,25 @@ const (
 	// session is dead — refreshing again cannot help.
 	minRefreshInterval = 10 * time.Second
 )
+
+// AppVersion is sent as x-pm-appversion on every request. The API rejects
+// (5003) any appversion below its per-app floor, so this header value must
+// stay at or above the newest proton-vpn-gtk-app release. It is a var rather
+// than a const so PVPN_APPVERSION can override it without rebuilding the
+// binary when Proton raises the floor again.
+var AppVersion = envOverride("linux-vpn@4.19.0", "PVPN_APPVERSION")
+
+// UserAgent carries the same version for the server-side switchboard; the
+// two must be bumped together. PVPN_USERAGENT overrides it.
+var UserAgent = envOverride("ProtonVPN/4.19.0 (Linux; go-pvpn)", "PVPN_USERAGENT")
+
+// envOverride returns defaultValue unless key names a non-empty env var.
+func envOverride(defaultValue string, key string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return defaultValue
+}
 
 // Client is the Proton VPN API client. It handles authenticated requests,
 // automatic token refresh, and retry logic.
