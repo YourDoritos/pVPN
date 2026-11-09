@@ -1,6 +1,6 @@
 module github.com/YourDoritos/pvpn
 
-go 1.26.6
+go 1.26.10
 
 require (
 	github.com/BurntSushi/toml v1.6.0
@@ -14,8 +14,8 @@ require (
 	github.com/muesli/termenv v0.16.0
 	github.com/pquerna/otp v1.5.0
 	github.com/vishvananda/netlink v1.3.0
-	golang.org/x/crypto v0.51.0
-	golang.org/x/sys v0.45.0
+	golang.org/x/crypto v0.58.0
+	golang.org/x/sys v0.49.0
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
 )
@@ -50,8 +50,8 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/vishvananda/netns v0.0.4 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 )
